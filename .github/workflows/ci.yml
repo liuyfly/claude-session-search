@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # Build both slices the same way build.sh does, so a break in either
+      # architecture surfaces here rather than on someone's Intel Mac.
+      - name: Build (arm64)
+        run: swift build -c release --triple arm64-apple-macosx14.0
+
+      - name: Build (x86_64)
+        run: swift build -c release --triple x86_64-apple-macosx14.0
+
+      # CI has no ~/.claude/projects, so only the corpus-independent
+      # assertions can run. --pure makes that explicit instead of relying
+      # on auto-detection.
+      - name: Self-test (pure)
+        run: ./.build/arm64-apple-macosx/release/ClaudeSessionSearch --selftest --pure
+
+      - name: Assemble the .app
+        run: ./build.sh
+
+      - name: Verify universal binary
+        run: |
+          BIN="dist/Claude Session Search.app/Contents/MacOS/ClaudeSessionSearch"
+          lipo -info "$BIN"
+          lipo -info "$BIN" | grep -q 'x86_64 arm64'
