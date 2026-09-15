@@ -291,16 +291,25 @@ enum Bench {
         }
     }
 
-    /// CLI 是同步的 top-level 代码，用信号量把 async 调用等回来
+    /// CLI 是同步的 top-level 代码，用信号量把 async 调用等回来。
+    ///
+    /// 结果走一个引用类型而不是捕获局部 `var` —— 后者在并发闭包里改是编译错误
+    /// （Swift 5.10 直接报 "mutation of captured var in concurrently-executing code"）。
+    /// 这里的同步实际上由信号量保证：`sem.wait()` 之后 Task 一定已经写完并 signal，
+    /// 所以 `@unchecked Sendable` 是成立的，不是拿它搪塞编译器。
+    private final class ResultBox<T>: @unchecked Sendable {
+        var value: Result<T, Error>?
+    }
+
     private static func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
         let sem = DispatchSemaphore(value: 0)
-        var result: Result<T, Error>!
+        let box = ResultBox<T>()
         Task {
-            do { result = .success(try await body()) } catch { result = .failure(error) }
+            do { box.value = .success(try await body()) } catch { box.value = .failure(error) }
             sem.signal()
         }
         sem.wait()
-        return try result.get()
+        return try box.value!.get()
     }
 
     /// 先按 id 精确找，找不到再按标题模糊找 —— 手敲 uuid 太累

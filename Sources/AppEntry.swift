@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// GUI 入口。刻意不加 @main —— 入口在 main.swift 里按命令行参数分派。
+@MainActor
 struct AppEntry: App {
     @State private var model = AppModel()
 
