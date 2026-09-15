@@ -13,14 +13,18 @@ Line Tools alone (no Xcode required).
 > **Unofficial.** Not affiliated with, endorsed by, or supported by Anthropic. It reads the
 > session files Claude Code writes on your machine; it does not talk to any Anthropic service.
 
-<!-- TODO: screenshot -->
+![Claude Session Search](docs/screenshot.png)
 
 ## Install
 
-Requires **macOS 14 (Sonoma) or later**, Intel or Apple Silicon.
+Requires **macOS 14 (Sonoma) or later**, Intel or Apple Silicon, and **Xcode Command Line
+Tools 15 or newer** (Swift 5.9+). Full Xcode is not needed — CI builds this on a stock
+macOS 14 runner with Swift 5.10.
 
 ```bash
-git clone https://github.com/<you>/claude-session-search.git
+xcode-select --install     # if you don't have the Command Line Tools yet
+
+git clone https://github.com/liuyfly/claude-session-search.git
 cd claude-session-search
 ./build.sh --install --run
 ```
