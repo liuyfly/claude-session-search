@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct RootView: View {
     @Bindable var model: AppModel
     /// 语言与主题菜单的 Picker 要绑到它们
@@ -150,6 +151,7 @@ enum ProjectScope: Hashable {
     case project(Int64)
 }
 
+@MainActor
 struct SidebarView: View {
     @Bindable var model: AppModel
 
@@ -217,6 +219,7 @@ struct SidebarView: View {
 
 /// 浮在界面底部中间的一次性提示。纯展示，不接受任何交互 ——
 /// 拦截点击的职责在调用处用 `.allowsHitTesting(false)` 关掉。
+@MainActor
 struct ToastView: View {
     let toast: AppModel.Toast
 
@@ -242,6 +245,7 @@ struct ToastView: View {
 
 // MARK: - 底部状态条
 
+@MainActor
 struct StatusBar: View {
     let model: AppModel
 

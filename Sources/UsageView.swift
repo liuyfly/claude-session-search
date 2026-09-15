@@ -4,6 +4,7 @@ import SwiftUI
 ///
 /// 数据不是从本地文件读的 —— 本地没有。是让 `claude -p "/usage"` 去问服务端，
 /// 详见 `UsageProbe`。斜杠命令不走模型推理，所以查它不耗额度。
+@MainActor
 struct UsageButton: View {
     @Bindable var model: AppModel
     @State private var showing = false
@@ -31,6 +32,7 @@ struct UsageButton: View {
     }
 }
 
+@MainActor
 struct UsagePanel: View {
     @Bindable var model: AppModel
     @State private var showRaw = false

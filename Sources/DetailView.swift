@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// 右栏：会话正文
+@MainActor
 struct DetailView: View {
     @Bindable var model: AppModel
     @State private var lastJumpRequest = 0
@@ -282,6 +283,7 @@ struct DetailView: View {
 /// 计数按**消息**算，不是按出现次数：跳转的落点是消息（`LazyVStack` 的锚点
 /// 只能是行），一条消息里出现五次也只能跳到这一条。写成「3/17 处」会让人以为
 /// 按「下一个」能在同一条里挪，所以文案明说是条数。
+@MainActor
 struct FindBar: View {
     @Bindable var model: AppModel
     @FocusState private var focused: Bool
@@ -367,6 +369,7 @@ struct FindBar: View {
 
 // MARK: - 会话头部
 
+@MainActor
 struct SessionHeader: View {
     let session: SessionHitGroup
     let subagents: [SessionHitGroup]
@@ -443,6 +446,7 @@ struct SessionHeader: View {
 
 /// 会话 id —— 也就是 ~/.claude/projects/<项目>/ 下那个 jsonl 的文件名。
 /// 点一下即可复制，恢复会话（`claude … --resume <id>`）要用它。
+@MainActor
 struct SessionIdLabel: View {
     let sessionId: String
     @State private var copied = false
@@ -488,6 +492,7 @@ struct SessionIdLabel: View {
 
 // MARK: - 单条消息
 
+@MainActor
 struct MessageBubble: View {
     let message: DetailMessage
     let terms: [String]

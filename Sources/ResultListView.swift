@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// 中栏：搜到的会话（或未搜索时的最近会话）
+@MainActor
 struct ResultListView: View {
     @Bindable var model: AppModel
 
@@ -72,6 +73,7 @@ struct ResultListView: View {
 
 // MARK: -
 
+@MainActor
 struct SessionRow: View {
     let group: SessionHitGroup
     let showPreviews: Bool

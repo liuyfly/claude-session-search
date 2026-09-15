@@ -469,6 +469,7 @@ enum MarkdownCache {
 /// **整条仍然只占 `LazyVStack` 的一行** —— 块视图住在 `MessageBubble` 内部，
 /// 行数还是消息数。这很关键：滚动定位那套机制（首尾锚点、两步滚到底）
 /// 是按行估高度的，把块拆成行会把它整个搅乱。
+@MainActor
 struct MarkdownBody: View {
     let messageId: Int64
     let blocks: [Markdown.Block]
@@ -584,6 +585,7 @@ struct MarkdownBody: View {
 /// 最早它是跟语言标签同一行的，于是没有语言标签的代码块一悬停就**凭空多出一行**，
 /// 块变高、下面的正文整个被推下去（用户实测报的就是这个）。
 /// 语言标签那行只跟「有没有语言」有关，和鼠标在哪无关。
+@MainActor
 struct CodeBlock: View {
     let text: AttributedString
     let lang: String?
@@ -633,6 +635,7 @@ struct CodeBlock: View {
 ///
 /// **窄栏靠换行，不做横向滚动**，理由同代码块：横向 ScrollView 嵌在正文这个
 /// 纵向 ScrollView 里会抢走触控板的纵向手势。列窄了单元格自己折行，一个字不丢。
+@MainActor
 struct TableBlock: View {
     let messageId: Int64
     let blockId: Int
