@@ -349,6 +349,8 @@ final class AppModel {
     /// 让它无限堆积的话，每次增量索引都要陪着它重解析一遍。
     private var pendingRetry: Set<String> = []
     private static let maxPendingRetry = 32
+    private var searchTask: Task<Void, Never>?
+    private var detailTask: Task<Void, Never>?
 
     /// 这一批该索引哪些路径：新报上来的，加上还欠着的重试。
     nonisolated static func retryBatch(new: [String], pending: Set<String>) -> [String] {
@@ -371,8 +373,6 @@ final class AppModel {
                                                      existing: Int) -> Bool {
         keepingContent && incoming == 0 && existing > 0
     }
-    private var searchTask: Task<Void, Never>?
-    private var detailTask: Task<Void, Never>?
 
     init() {
         Task { await bootstrap() }
