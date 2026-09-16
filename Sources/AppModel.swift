@@ -341,6 +341,36 @@ final class AppModel {
     private var search: SearchService?
     private var indexService: IndexService?
     private var watcher: ProjectsWatcher?
+
+    /// 上一轮索引失败、等着重试的路径。
+    ///
+    /// FSEvents 不会把同一个事件再报一次，所以失败的路径必须自己记着，
+    /// 搭下一趟车重试。设上限是因为一个真正损坏的文件会每轮都失败 ——
+    /// 让它无限堆积的话，每次增量索引都要陪着它重解析一遍。
+    private var pendingRetry: Set<String> = []
+    private static let maxPendingRetry = 32
+
+    /// 这一批该索引哪些路径：新报上来的，加上还欠着的重试。
+    nonisolated static func retryBatch(new: [String], pending: Set<String>) -> [String] {
+        Array(Set(new).union(pending))
+    }
+
+    /// 失败路径里留哪些等下一轮。超过上限就丢掉多的 ——
+    /// 坏文件不该拖着每一轮增量索引陪跑。
+    nonisolated static func nextPending(failed: [String], limit: Int) -> Set<String> {
+        Set(failed.prefix(limit))
+    }
+
+    /// 流式刷新时，这次查询的结果能不能覆盖正在显示的正文。
+    ///
+    /// 空结果覆盖非空正文 = 用户眼前的会话突然变空白。宁可停在上一秒的内容上，
+    /// 也不要把已经读到的抹掉。只在 `keepingContent`（后台自动刷新）时这样兜底：
+    /// 用户主动切会话时该清就得清，否则会看到上一个会话的残影。
+    nonisolated static func shouldKeepExistingDetail(keepingContent: Bool,
+                                                     incoming: Int,
+                                                     existing: Int) -> Bool {
+        keepingContent && incoming == 0 && existing > 0
+    }
     private var searchTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
 
@@ -423,9 +453,16 @@ final class AppModel {
         watcher = ProjectsWatcher(root: Indexer.defaultRoot.path) { [weak self] paths in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let added = await indexService.indexPaths(paths)
-                guard added > 0 else { return }
-                self.status = .autoIndexed(added)
+                // 把上一轮失败的路径捎上一起重试
+                let batch = Self.retryBatch(new: paths, pending: self.pendingRetry)
+                self.pendingRetry.removeAll()
+
+                let result = await indexService.indexPaths(batch)
+                self.pendingRetry = Self.nextPending(failed: result.failed,
+                                                     limit: Self.maxPendingRetry)
+
+                guard result.added > 0 else { return }
+                self.status = .autoIndexed(result.added)
                 await self.reloadProjects()
                 await self.loadRecent()
                 if self.hasQuery { await self.performSearch() }
@@ -436,7 +473,7 @@ final class AppModel {
                 // 是没法读的（见 FollowSetting）。
                 if let sid = self.selectedSessionId {
                     let fileKey = SessionHitGroup.fileKey(of: sid)
-                    if paths.contains(where: { $0.contains(fileKey) }) {
+                    if batch.contains(where: { $0.contains(fileKey) }) {
                         self.loadDetail(keepingContent: true,
                                         thenScrollToBottom: FollowSetting.shared.enabled)
                     }
@@ -534,6 +571,20 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.selectedSessionId == sid else { return }
+                // `keepingContent` 的字面意思是「别动已经显示的内容」，但它原来只
+                // 管了 loading 指示和折叠状态 —— 正文仍然被无条件覆盖，查询一旦
+                // 返回空（出错被 `try?` 吞成 []、或读到写入中途的状态），正在看的
+                // 会话就当场变成一片空白。
+                //
+                // 这里补上：流式刷新时，空结果不许覆盖非空的正文。宁可让画面停在
+                // 上一秒的内容上等下一轮，也不能把已经读到的东西抹掉 —— 前者用户
+                // 未必察觉，后者是肉眼可见的故障。
+                if Self.shouldKeepExistingDetail(keepingContent: keepingContent,
+                                                 incoming: msgs.count,
+                                                 existing: self.detail.count) {
+                    self.loadingDetail = false
+                    return
+                }
                 self.detail = msgs
                 self.detailHasTools = wantTools
                 self.skippedToolCount = skipped

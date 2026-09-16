@@ -185,6 +185,41 @@ enum SelfTest {
                 != UserDefaults.standard.bool(forKey: "aKeyThatIsNeverSet-ClaudeSessionSearch"),
                "resolve 的默认值与 UserDefaults.bool 的兜底相反（所以不能用 bool(forKey:)）")
 
+        // ---------- 7v. 流式输出时的刷新 ----------
+        //
+        // 用户实测：Claude 流式输出时，正文偶尔「新内容加载不出来」，
+        // 偶尔「变空白」。三处成因，这里钉住能纯函数化的两处
+        // （第三处是 scrollToBottom 的陈旧校正，属于 UI 行为，只能靠人看）。
+        print("\n[7v] 流式刷新的兜底")
+
+        // ① 空结果不许覆盖非空正文 —— 这是「变空白」的直接成因。
+        //    查询被 `try?` 吞掉错误后会返回 []，原来它会被无条件赋给 detail。
+        expect(AppModel.shouldKeepExistingDetail(keepingContent: true, incoming: 0, existing: 42),
+               "后台刷新拿到空结果 → 保留正在显示的正文")
+        expect(!AppModel.shouldKeepExistingDetail(keepingContent: true, incoming: 5, existing: 42),
+               "拿到内容就正常更新")
+        expect(!AppModel.shouldKeepExistingDetail(keepingContent: true, incoming: 0, existing: 0),
+               "本来就是空的，没什么要保的")
+        // 用户主动切会话时该清就得清，否则会看到上一个会话的残影
+        expect(!AppModel.shouldKeepExistingDetail(keepingContent: false, incoming: 0, existing: 42),
+               "主动切会话时空结果照常生效，不留残影")
+
+        // ② 索引失败的路径要搭下一趟车重试。
+        //    FSEvents 不会重报同一个事件，失败就丢 = 那段回复永远不出现。
+        let retried = AppModel.retryBatch(new: ["/a.jsonl", "/b.jsonl"],
+                                          pending: ["/c.jsonl"])
+        expect(Set(retried) == Set(["/a.jsonl", "/b.jsonl", "/c.jsonl"]),
+               "欠着的重试路径并进这一批")
+        expect(AppModel.retryBatch(new: ["/a.jsonl"], pending: ["/a.jsonl"]).count == 1,
+               "同一个路径不会被索引两遍")
+        expect(AppModel.retryBatch(new: [], pending: []).isEmpty, "都没有就是空批")
+
+        // 坏文件不该拖着每一轮增量索引陪跑，所以待重试集合有上限
+        let manyFailed = (1...100).map { "/f\($0).jsonl" }
+        expect(AppModel.nextPending(failed: manyFailed, limit: 32).count == 32,
+               "待重试路径不超过上限（实际 \(AppModel.nextPending(failed: manyFailed, limit: 32).count)）")
+        expect(AppModel.nextPending(failed: [], limit: 32).isEmpty, "没有失败就不留尾巴")
+
         // ---------- 7y. 跨天刷新 ----------
         //
         // 用户实测：app 连开三天，08-28 16:57 的会话一直显示「Today 16:57」，
