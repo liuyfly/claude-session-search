@@ -55,16 +55,33 @@ actor IndexService {
         try indexer.indexAll(rebuild: rebuild, onProgress: onProgress)
     }
 
+    /// 一批增量索引的结果。
+    ///
+    /// 之所以要把失败路径带出来：FSEvents 的事件是**一次性**的。原来这里
+    /// `(try? …) ?? -1` 把错误直接吞掉，那批内容就再也没人管了 —— 除非之后
+    /// 恰好又有写入把同一个文件带进新的事件。如果失败的正好是流式输出的最后
+    /// 一批，那段回复就一直不出现，看起来就是「新内容加载不出来」。
+    struct BatchResult: Sendable {
+        /// 实际新增的正文条数（0 表示这批变更没带来新内容）
+        var added: Int
+        /// 索引时抛错的路径，交给调用方安排重试
+        var failed: [String]
+    }
+
     /// FSEvents 报上来的一批变更路径，逐个增量索引。
-    /// - Returns: 实际新增的正文条数（0 表示这批变更没带来新内容）
     @discardableResult
-    func indexPaths(_ paths: [String]) -> Int {
+    func indexPaths(_ paths: [String]) -> BatchResult {
         var added = 0
+        var failed: [String] = []
         for path in paths {
-            let n = (try? indexer.indexPath(path)) ?? -1
-            if n > 0 { added += n }
+            do {
+                let n = try indexer.indexPath(path)
+                if n > 0 { added += n }
+            } catch {
+                failed.append(path)
+            }
         }
-        return added
+        return BatchResult(added: added, failed: failed)
     }
 }
 

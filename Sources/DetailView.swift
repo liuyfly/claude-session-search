@@ -166,8 +166,15 @@ struct DetailView: View {
         // 第二步：连着校正几拍。每一拍都有更多末尾行被真正构建和测量，
         // 落点随之收敛，最后那个「显示工具记录」按钮才能完整露出来。
         // 校正窗口压在 0.25s 内，免得和用户接着的手动滚动打架。
+        //
+        // 每一拍都要核对 detailVersion：Claude 流式输出时正文每秒都在变，
+        // 而这三拍是**已经排进队列**的。内容一变，LazyVStack 的高度测量就作废了，
+        // 这时再去跳那个 1pt 的底部锚点，正是上面注释里说的「一偏就整个出视口」——
+        // 屏幕全空。陈旧的校正必须放弃，让新一轮 scrollToBottom 从第一步重新来。
+        let version = model.detailVersion
         for delay in [0.0, 0.08, 0.25] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard model.detailVersion == version else { return }
                 proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
         }
