@@ -358,6 +358,187 @@ enum Markdown {
         Highlight.highlight(&s, terms: terms)
         return s
     }
+
+    // MARK: - 纯文本
+
+    /// 把正文转成**纯文本**：去掉 Markdown 标记，保留内容和版式。
+    ///
+    /// 「复制这条消息」用。原来复制的是原文，粘到邮件、工单、聊天框里就是一片
+    /// `**` 和 `|---|` —— 那些字符是写给渲染器看的，不是写给人看的。
+    ///
+    /// 三件事不能顺手一起抹掉：
+    /// - **代码块原样保留**，只脱围栏。围栏里的 `*` `_` `#` 是代码本身。
+    /// - **链接补回 URL**：`[文档](https://…)` 渲染出来只剩「文档」，纯文本里
+    ///   丢了 URL 就再也找不回来，补成 `文档 (https://…)`。
+    /// - **表格重排成空格对齐**，而不是把竖线删了了事 —— 删完粘出去是一摊烂泥。
+    ///
+    /// `keepCodeLanguage` 把围栏上的语言标注(```swift 的 swift)留在代码块前面。
+    /// 默认丢掉 —— 纯文本里单独一行 "swift" 只是噪音。自检要**一字不差**地
+    /// 比对「原文」和「复制出来的」，少一个 swift 就对不上，所以留了这个开关。
+    nonisolated static func plainText(_ src: String,
+                                      keepCodeLanguage: Bool = false) -> String {
+        var out = ""
+        var prev: Kind?
+        for b in blocks(src) {
+            let piece: String
+            switch b.kind {
+            case .paragraph(let t):          piece = stripInline(t)
+            case .heading(_, let t):         piece = stripInline(t)
+            case .quote(let t):              piece = stripInline(t)
+            case .code(let lang, let t):
+                piece = keepCodeLanguage && lang != nil ? lang! + "\n" + t : t
+            case .listItem(let marker, let t, let depth):
+                piece = String(repeating: "  ", count: depth) + marker + " " + stripInline(t)
+            case .table(let header, let rows, let align):
+                piece = tablePlain(header: header, rows: rows, align: align)
+            case .rule:
+                // 分割线在纯文本里没有对应物，块之间本来就隔着空行
+                continue
+            }
+            if !out.isEmpty {
+                // 列表项之间只换行。一律空行的话，一个六项的清单会被拉成半屏。
+                out += isListItem(prev) && isListItem(b.kind) ? "\n" : "\n\n"
+            }
+            out += piece
+            prev = b.kind
+        }
+        return out
+    }
+
+    nonisolated static func isListItem(_ k: Kind?) -> Bool {
+        if case .listItem = k { return true }
+        return false
+    }
+
+    /// 剥掉行内标记：`**粗**` → `粗`、`` `码` `` → `码`、`[文](url)` → `文 (url)`。
+    ///
+    /// 复用渲染用的那个解析器，保证「复制下来的」和「屏幕上看到的」出自同一次
+    /// 解析 —— 两套实现迟早在某个边角上对不上，而那种不一致没人会去查。
+    nonisolated static func stripInline(_ src: String) -> String {
+        let s = parse(src)
+        var out = ""
+        // 一个链接可能被切成**多个 run** —— `[**粗**说明](url)` 就是两个，
+        // 两个都带着同一个 link。逐 run 补 URL 会把它补两遍，所以先攒起来。
+        var linkURL: String?
+        var linkText = ""
+
+        func flushLink() {
+            guard let url = linkURL else { return }
+            out += linkText
+            if linkAddsInfo(url: url, text: linkText) { out += " (\(url))" }
+            linkURL = nil
+            linkText = ""
+        }
+
+        for run in s.runs {
+            let text = String(s[run.range].characters)
+            // `absoluteString` 给的是**规范化**后的 URL：中文路径会变成一串
+            // %E5%8F%AF，复制出来人读不了。解回来。
+            let url = run.link.map { $0.absoluteString.removingPercentEncoding
+                                     ?? $0.absoluteString }
+            if let url, !text.isEmpty {
+                if linkURL == url { linkText += text }
+                else { flushLink(); linkURL = url; linkText = text }
+            } else {
+                flushLink()
+                out += text
+            }
+        }
+        flushLink()
+        return out
+    }
+
+    /// 这个链接的 URL 除了文字本身，还带了新信息吗？
+    ///
+    /// 解析器会把**裸邮箱**和**裸网址**也认成链接，并补上协议头：
+    /// `liuyfly@126.com` → `mailto:liuyfly@126.com`、`example.com` → `https://example.com/`。
+    /// 那不是新信息，补出去就是每个邮箱后面跟一串重复的东西。
+    nonisolated static func linkAddsInfo(url: String, text: String) -> Bool {
+        func bare(_ s: String) -> String {
+            var t = s
+            for scheme in ["mailto:", "https://", "http://"] where t.hasPrefix(scheme) {
+                t.removeFirst(scheme.count)
+                break
+            }
+            if t.hasSuffix("/") { t.removeLast() }       // 规范化补的尾斜杠
+            return t
+        }
+        return bare(url) != bare(text)
+    }
+
+    /// 表格重排成空格对齐的纯文本。
+    ///
+    /// 列宽按**显示宽度**算而不是字符数 —— 汉字占两格，按 `count` 补空格的话
+    /// 每一列都是歪的，而真实会话里的表格大半是中文。
+    nonisolated static func tablePlain(header: [String], rows: [[String]],
+                                       align: [Align]) -> String {
+        let columns = max(header.count, rows.map(\.count).max() ?? 0)
+        guard columns > 0 else { return "" }
+
+        func cell(_ r: [String], _ c: Int) -> String {
+            stripInline(c < r.count ? r[c] : "")
+        }
+        var width = [Int](repeating: 0, count: columns)
+        for r in [header] + rows {
+            for c in 0..<columns { width[c] = max(width[c], displayWidth(cell(r, c))) }
+        }
+
+        func line(_ r: [String]) -> String {
+            let cols = (0..<columns).map { c -> String in
+                let t = cell(r, c)
+                let pad = max(0, width[c] - displayWidth(t))
+                switch c < align.count ? align[c] : .left {
+                case .right:  return String(repeating: " ", count: pad) + t
+                case .center: let l = pad / 2
+                              return String(repeating: " ", count: l) + t
+                                   + String(repeating: " ", count: pad - l)
+                case .left:   return t + String(repeating: " ", count: pad)
+                }
+            }
+            // 行尾补出来的空格没有意义，粘到别处还留一条看不见的毛边
+            return trimTrailingSpaces(cols.joined(separator: "  "))
+        }
+
+        let ruler = (0..<columns)
+            .map { String(repeating: "─", count: max(1, width[$0])) }
+            .joined(separator: "  ")
+        return ([line(header), ruler] + rows.map(line)).joined(separator: "\n")
+    }
+
+    nonisolated static func trimTrailingSpaces(_ s: String) -> String {
+        var t = s
+        while t.hasSuffix(" ") { t.removeLast() }
+        return t
+    }
+
+    /// 等宽字体里占几格。够用就行，不追求 `wcwidth` 的全部边角 ——
+    /// 这里的用途只是让复制出来的表格看着是齐的。
+    ///
+    /// 按**字形簇**数而不是 unicode 标量：`👨‍👩‍👦` 是三个标量拼的，按标量算成 6 格。
+    nonisolated static func displayWidth(_ s: String) -> Int {
+        var w = 0
+        for ch in s {
+            guard let u = ch.unicodeScalars.first?.value else { continue }
+            switch u {
+            case 0x1100...0x115F,            // 韩文字母
+                 0x2E80...0xA4CF,            // CJK 部首、假名、汉字、注音
+                 0xA960...0xA97F,
+                 0xAC00...0xD7A3,            // 韩文音节
+                 0xF900...0xFAFF,            // CJK 兼容汉字
+                 0xFE10...0xFE19,
+                 0xFE30...0xFE6F,            // 竖排标点、全角形式
+                 0xFF00...0xFF60,            // 全角 ASCII 与标点
+                 0xFFE0...0xFFE6,
+                 0x1F300...0x1F64F,          // 符号与人物 emoji
+                 0x1F900...0x1F9FF,
+                 0x20000...0x3FFFD:          // CJK 扩展 B 及以后
+                w += 2
+            default:
+                w += 1
+            }
+        }
+        return w
+    }
 }
 
 // MARK: - 缓存

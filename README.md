@@ -5,7 +5,7 @@ one you happen to be in.
 
 `claude --resume` only lists sessions in the current directory, by title. If you remember
 *what was said* but not *where*, there is no way to find it. This indexes all of it and
-answers a query in 50–200 ms over a 93 MB corpus.
+answers a query in about 100 ms over a 124 MB corpus.
 
 A native macOS app. SwiftUI + SQLite FTS5, **no runtime dependencies**, builds with Command
 Line Tools alone (no Xcode required).
@@ -31,8 +31,8 @@ cd claude-session-search
 
 That builds a universal binary (arm64 + x86_64), assembles the `.app`, installs it to
 `/Applications`, and launches it. First launch indexes everything: on the author's machine
-1.1 GB of raw transcripts (205 sessions, 118 subagents) became a 93 MB searchable corpus in
-**53 seconds**. Afterwards it is incremental and effectively instant.
+1.5 GB of raw transcripts (251 sessions, 143 subagents) became a 124 MB searchable corpus in
+**77 seconds**. Afterwards it is incremental and effectively instant.
 
 Other build modes:
 
@@ -89,12 +89,13 @@ highlighted excerpts. Click one to read the full transcript.
   tokenizer.
 - **Short queries fall back automatically.** `trigram` silently returns zero hits for queries
   under 3 characters — the most dangerous failure mode there is, because it looks like "no
-  results" rather than "unsupported". Those queries switch to a substring scan (~210–280 ms
-  over 93 MB) and the status bar says so.
+  results" rather than "unsupported". Those queries switch to a substring scan (~250 ms
+  over 124 MB) and the status bar says so.
 - **Multiple words are ANDed** against the same message.
 
 **Other features:** live incremental indexing via FSEvents · Markdown rendering of Claude's
-replies (with copy buttons on code blocks and tables) · export a session or a whole project
+replies (copying a reply gives you plain text, not `**source**`; code blocks and
+tables have their own copy buttons) · export a session or a whole project
 to Markdown + CSV · subscription quota display · recovery of sessions Claude Code has already
 deleted · English/Chinese UI · light/dark/system themes.
 
@@ -155,9 +156,9 @@ attributed to this app, and more. It is written in Chinese.
 "$BIN" --selftest --pure   # corpus-independent assertions only
 ```
 
-There are two tiers. The **pure tier** (175 assertions) touches no disk at all — Markdown
+There are two tiers. The **pure tier** (206 assertions) touches no disk at all — Markdown
 block splitting, in-session find, reset-time parsing, date formatting, path safety — and
-should be green on any machine, in under a second. The **corpus tier** (152 more) builds a
+should be green on any machine, in under a second. The **corpus tier** (154 more) builds a
 full index from your own `~/.claude/projects` and asserts against it.
 
 Corpus assertions are deliberately **structural**, never scale-based: subset relations,
