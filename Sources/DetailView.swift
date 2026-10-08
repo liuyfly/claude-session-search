@@ -518,6 +518,11 @@ struct MessageBubble: View {
             && message.role == "assistant" && message.kind == "text"
     }
 
+    /// 复制按钮送出去的正文。渲染成什么样就复制什么样。
+    private var copyPlain: String {
+        rendersMarkdown ? Markdown.plainText(message.text) : message.text
+    }
+
     /// 「我发出的消息」。必须连 kind 一起判：`role == "user"` 的记录里
     /// 绝大多数（实测 34287 / 38670）其实是 tool_result —— 那是工具回填给模型的，
     /// 挂在 user 名下只是协议如此，并不是人打的字。
@@ -607,14 +612,27 @@ struct MessageBubble: View {
             //
             // 用 opacity 而不是 `if hovering`：条件渲染会让按钮出现时把时间戳
             // 往左挤一下，鼠标扫过一屏就是一串横向抖动。占位一直在，只是看不见。
-            Button { onCopy(message.text) } label: {
+            //
+            // 复制出去的是**纯文本**，不是原文。`**粗体**`、`|---|` 这些字符是
+            // 写给渲染器看的，粘进邮件或工单只会碍眼。要原汁原味的 Markdown
+            // 走右键 —— 那是粘回 Claude、贴进 issue 时才需要的。
+            //
+            // 只对按 Markdown 渲染的消息这么做。你自己打的字、命令输出、
+            // thinking 屏幕上就是原样显示的，剥它等于改你的话。
+            Button { onCopy(copyPlain) } label: {
                 Image(systemName: "doc.on.doc").font(.caption2)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help(L.copyMessage)
+            .help(rendersMarkdown ? L.copyMessage : L.copyMessageRaw)
             .opacity(hovering ? 1 : 0)
             .allowsHitTesting(hovering)
+            .contextMenu {
+                if rendersMarkdown {
+                    Button(L.copyMessagePlain) { onCopy(copyPlain) }
+                    Button(L.copyMessageMarkdown) { onCopy(message.text) }
+                }
+            }
 
             // 时间未知就整个不渲染 —— 不留占位符
             if let ts = When.messageStamp(message.timestamp) {

@@ -609,6 +609,82 @@ enum SelfTest {
             expect(String(empty.characters) == "随便一段", "空查询词不改动内容也不卡住")
         }
 
+        // ---------- 7n. 复制成纯文本 ----------
+        //
+        // 「复制这条消息」送出去的是渲染后的样子，不是源码。
+        // 粘到邮件、工单、聊天框里的人看不到渲染，只看到一堆 ** 和 |---|。
+        print("\n[7n] 复制成纯文本")
+
+        expect(Markdown.plainText("这是 **重点**，还有 `ptCode`。")
+                == "这是 重点，还有 ptCode。", "粗体和行内代码的标记被剥掉")
+        expect(Markdown.plainText("## 结论") == "结论", "标题去掉井号")
+        expect(Markdown.plainText("> 引用一句") == "引用一句", "引用去掉尖括号")
+
+        // 链接：渲染出来只剩文字，纯文本里丢了 URL 就再也找不回来
+        expect(Markdown.plainText("见 [文档](https://example.com/a)")
+                == "见 文档 (https://example.com/a)", "链接补回 URL")
+        // 规范化后的 URL 里中文是一串 %E5%8F%AF，复制出来人读不了
+        expect(Markdown.plainText("见 [文档](https://example.com/文档)")
+                == "见 文档 (https://example.com/文档)", "URL 里的中文不留百分号编码")
+        // 链接文字里夹了别的格式时，AttributedString 会把它切成好几个 run，
+        // 每个都带着同一个 link。逐 run 补 URL 会补好几遍。
+        expect(Markdown.plainText("见 [**粗**文档](https://example.com/a)")
+                == "见 粗文档 (https://example.com/a)", "链接被切成多段时 URL 只补一次")
+        // 解析器会把裸邮箱和裸网址也认成链接并补上协议头。那不是新信息 ——
+        // 补出去就是每个邮箱后面跟一串重复的东西（真实语料里抓到的）。
+        expect(!Markdown.plainText("https://example.com").contains("("),
+               "裸网址不重复括一遍")
+        expect(Markdown.plainText("联系 someone@example.com") == "联系 someone@example.com",
+               "裸邮箱不补 mailto:")
+        expect(Markdown.linkAddsInfo(url: "https://example.com/a", text: "文档"),
+               "正常链接要补 URL")
+        expect(!Markdown.linkAddsInfo(url: "mailto:a@b.com", text: "a@b.com"),
+               "mailto: 前缀不算新信息")
+        expect(!Markdown.linkAddsInfo(url: "https://example.com/", text: "https://example.com"),
+               "规范化补的尾斜杠不算新信息")
+
+        // 代码块只脱围栏。里面的 * _ # 是代码本身，剥它就是破坏它
+        let ptCode = Markdown.plainText("```swift\nlet x = a * b   // **not bold**\n```")
+        expect(ptCode == "let x = a * b   // **not bold**",
+               "代码块原样保留，只去掉围栏（得到 \(ptCode)）")
+
+        // 列表：项与项之间只换行。一律空行的话六项清单会被拉成半屏
+        let ptList = Markdown.plainText("- 一\n- 二\n- 三")
+        expect(ptList == "• 一\n• 二\n• 三", "列表项之间单换行（得到 \(ptList.debugDescription)）")
+        expect(Markdown.plainText("正文。\n\n- 一").contains("\n\n"),
+               "段落和列表之间仍然空一行")
+
+        // 分隔线在纯文本里没有对应物
+        expect(!Markdown.plainText("上\n\n---\n\n下").contains("---"), "分隔线不输出")
+
+        // 表格是这件事里最值钱的一块：删掉竖线会粘成一摊烂泥，要重排成对齐的
+        let ptTable = Markdown.plainText("| 名称 | 说明 |\n|---|---|\n| a | 短 |\n| bbbb | 长一些 |")
+        expect(!ptTable.contains("|"), "纯文本表格里没有竖线")
+        expect(!ptTable.contains("---"), "也没有 Markdown 分隔行")
+        let ptRows = ptTable.components(separatedBy: "\n")
+        expect(ptRows.count == 4, "表头 + 横线 + 两行数据（得到 \(ptRows.count) 行）")
+        // 列宽按**显示宽度**对齐。按 count 算的话「名称」和「ab」一样长，
+        // 第二列就会整体左移两格 —— 中文表格最常见的歪法。
+        let ptAligned = Markdown.plainText("| 名称 | x |\n|---|---|\n| ab | y |")
+            .components(separatedBy: "\n")
+        expect(ptAligned[0] == "名称  x",
+               "表头：汉字列后只隔两格（得到 \(ptAligned[0].debugDescription)）")
+        expect(ptAligned[2] == "ab    y",
+               "ab 补到四格宽再隔两格（得到 \(ptAligned[2].debugDescription)）")
+
+        expect(Markdown.displayWidth("名称") == 4, "汉字占两格")
+        expect(Markdown.displayWidth("abcd") == 4, "ASCII 占一格")
+        expect(Markdown.displayWidth("中a") == 3, "中英混排")
+        expect(Markdown.displayWidth("👨‍👩‍👦") == 2, "emoji 按字形簇算两格，不是按标量")
+        expect(Markdown.trimTrailingSpaces("a  ") == "a", "行尾空格去掉")
+        expect(Markdown.trimTrailingSpaces("  a") == "  a", "行首空格留着")
+
+        // 技术文本不能被吃掉 —— 这条路径和渲染共用解析器，但出口不同，单独钉住
+        for ptSafe in ["删掉 *.swift", "foo_bar_baz", "C:\\Users\\name", "2 * 3 = 6"] {
+            expect(Markdown.plainText(ptSafe) == ptSafe, "技术文本原样复制：\(ptSafe)")
+        }
+        expect(Markdown.plainText("") == "", "空正文复制出空串")
+
         // ---------- 7o. Toast ----------
         //
         // Toast 靠 `.animation(value:)` 驱动，值不变就不重播。
@@ -984,7 +1060,9 @@ enum SelfTest {
         var mdKinds: [String: Int] = [:]
         // 样本里有多少条回复「长得像有表格」—— 用来判断切不出表格是语料如此，还是 bug
         var mdTableSyntax = 0
-        let syntaxChars = Set("*_`#|->~[]()+. \t\n\r•:\\")
+        // 复制成纯文本：不能丢内容，也不能把 Markdown 标记带出去
+        var ptLost = 0, ptWithPipe = 0, ptTables = 0, ptBadTable = 0
+        let syntaxChars = Set("*_`#|->~[]()+. \t\n\r•:\\─")
         func contentOnly(_ s: String) -> String {
             String(s.filter { !syntaxChars.contains($0) })
         }
@@ -1036,6 +1114,26 @@ enum SelfTest {
                         }
                     }
                     if contentOnly(m.text) != contentOnly(shown.joined()) { mdLost += 1 }
+
+                    // 复制按钮送出去的东西。比对要一字不差，所以让它把代码块的
+                    // 语言标注也留着 —— 实际复制时那个标注是丢掉的。
+                    let pt = Markdown.plainText(m.text)
+                    if contentOnly(m.text)
+                        != contentOnly(Markdown.plainText(m.text, keepCodeLanguage: true)) {
+                        ptLost += 1
+                    }
+                    // 切出来的表格重排后必须是「表头 + 横线 + 每行一条」。
+                    // 切不出来的表格（没有前导竖线那种）会原样留在正文里，
+                    // 那是块切分器的边界，不是复制的问题，这里不计它。
+                    for b in bs {
+                        if case .table(let h, let rs, let al) = b.kind {
+                            ptTables += 1
+                            let lines = Markdown.tablePlain(header: h, rows: rs, align: al)
+                                .components(separatedBy: "\n")
+                            if lines.count != rs.count + 2 { ptBadTable += 1 }
+                        }
+                    }
+                    if pt.contains("|---") { ptWithPipe += 1 }
                 }
             }
         }
@@ -1046,6 +1144,13 @@ enum SelfTest {
         // 表格是第二步加的，风险是「检测条件写太严 → 真实数据一个都不匹配」，
         // 而手写的单元样本照样过。所以不钉数量（你的语料里可能真没表格），
         // 只钉「样本里出现过表格语法，就必须切得出来」。
+        // 复制成纯文本：标记没了，内容一个字不少
+        print("   复制成纯文本：内容有出入 \(ptLost) 条，重排了 \(ptTables) 张表"
+              + "，正文里仍有表格管道的 \(ptWithPipe) 条（切不出来的表格，原样留着）")
+        expect(ptLost == 0, "纯文本复制一个字都没丢（有出入 \(ptLost) 条）")
+        expect(ptBadTable == 0,
+               "\(ptTables) 张真实表格重排后行数都对（错的 \(ptBadTable) 张）")
+
         if mdTableSyntax > 0 {
             expect((mdKinds["表格"] ?? 0) > 0,
                    "\(mdTableSyntax) 条回复含表格语法，至少要切出一个表格"
