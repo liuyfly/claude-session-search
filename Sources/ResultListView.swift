@@ -20,6 +20,9 @@ struct ResultListView: View {
                     }
                 }
                 .listStyle(.inset)
+                // 让出底部状态栏那一截，否则滚到底时最后一行被压在它后面，
+                // 而且已经滚到头，再滑也出不来。原因见 `StatusBarMetrics`。
+                .safeAreaInset(edge: .bottom, spacing: 0) { StatusBarSpacer() }
             }
         }
         .navigationTitle(model.hasQuery ? L.searchResults : L.recentSessions)

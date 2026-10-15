@@ -103,7 +103,7 @@ struct DetailView: View {
                     // padding 会被推出视口，一点忙都帮不上 —— 末尾那条于是正好
                     // 躲在状态栏后面，而且已经滚到头，再滚也不动。
                     Color.clear
-                        .frame(height: Self.statusBarInset)
+                        .frame(height: StatusBarMetrics.shared.height)
                         .id(Self.bottomAnchor)
                 }
                 .padding(16)
@@ -189,10 +189,6 @@ struct DetailView: View {
     /// 首尾锚点的 id（正文首尾各放了个 1pt 占位视图）
     private static let topAnchor = "transcript-top"
     private static let bottomAnchor = "transcript-bottom"
-
-    /// 底部状态栏的高度：`.font(.caption)` 一行 + 上下各 6pt。
-    /// 底部锚点按这个高度占位，末尾内容才不会被状态栏压住。
-    private static let statusBarInset: CGFloat = 28
 
     @ViewBuilder
     private func toolToggle(title: String, icon: String, on: Bool) -> some View {

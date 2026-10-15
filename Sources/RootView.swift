@@ -190,6 +190,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) { StatusBarSpacer() }
     }
 
     @ViewBuilder
@@ -245,6 +246,46 @@ struct ToastView: View {
 
 // MARK: - 底部状态条
 
+/// 状态栏的**实测**高度。
+///
+/// 为什么要测：状态栏是用 `.safeAreaInset` 挂在 **NavigationSplitView** 上的，
+/// 而这个 inset **不会**内缩三栏各自内部的 ScrollView —— AX 树里三栏滚动区的
+/// 底边都落在窗口最底部，也就是说它们都伸到状态栏**后面**。每一栏得自己让出
+/// 这么高，否则滚到底时最后一行被压住，而且已经滚到头，再滑也出不来。
+///
+/// 为什么不写死：状态栏在索引时会把文字换成 `ProgressView`，比一行 `.caption`
+/// 高；字号、语言、系统版本也都会改它。写死一个数字就是在赌，赌错了又是同一个 bug。
+@MainActor
+@Observable
+final class StatusBarMetrics {
+    static let shared = StatusBarMetrics()
+    private(set) var height: CGFloat = 28
+
+    fileprivate func report(_ h: CGFloat) {
+        // 布局过程中回写状态会触发重算，差半个点就别惊动它
+        guard h > 0, abs(h - height) > 0.5 else { return }
+        height = h
+    }
+}
+
+private struct StatusBarHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 三栏共用的底部让位视图。放在 List 里要当**真实的一行**，
+/// 不能靠 `contentMargins` —— 那个在 List 上不保证生效。
+@MainActor
+struct StatusBarSpacer: View {
+    private var metrics = StatusBarMetrics.shared
+
+    var body: some View {
+        Color.clear.frame(height: metrics.height)
+    }
+}
+
 @MainActor
 struct StatusBar: View {
     let model: AppModel
@@ -282,5 +323,14 @@ struct StatusBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: StatusBarHeightKey.self,
+                                       value: geo.size.height)
+            }
+        )
+        .onPreferenceChange(StatusBarHeightKey.self) { h in
+            Task { @MainActor in StatusBarMetrics.shared.report(h) }
+        }
     }
 }
