@@ -249,7 +249,18 @@ enum L {
     @MainActor static var copyTable: String {
         t("复制这张表（Markdown）", "Copy this table as Markdown")
     }
-    @MainActor static var copyMessage: String { t("复制这条消息的原文", "Copy this message as plain text") }
+    @MainActor static var copyMessage: String {
+        t("复制这条消息（纯文本）· 右键可复制 Markdown 原文",
+          "Copy this message as plain text · right-click for Markdown source")
+    }
+    /// 不按 Markdown 渲染的消息（你打的字、工具输出）：复制就是原样，没有第二种口径
+    @MainActor static var copyMessageRaw: String { t("复制这条消息", "Copy this message") }
+    @MainActor static var copyMessagePlain: String {
+        t("复制纯文本", "Copy as Plain Text")
+    }
+    @MainActor static var copyMessageMarkdown: String {
+        t("复制 Markdown 原文", "Copy as Markdown Source")
+    }
     @MainActor static var copiedMessage: String { t("已复制到剪贴板", "Copied to clipboard") }
 
     // MARK: 会话内查找
