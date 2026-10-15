@@ -682,6 +682,16 @@ struct MarkdownBody: View {
         return 7
     }
 
+    // 所有正文 Text 都带 `.fixedSize(horizontal: false, vertical: true)`。
+    //
+    // 不带的话，`LazyVStack` 里的长文本会被**垂直压扁**：Text 报出来的高度
+    // 远小于折行后真正要占的高度，于是末尾那条有一大截在 ScrollView 的
+    // 可视范围之外，而且已经滚到头 —— 再怎么滑也出不来。
+    //
+    // 谁最容易踩到：**一整段不换行的长文字**。分了段的回复每段都短，
+    // 高度算错也错不了多少；1422 字零换行的那种要折成八九行，差额就是
+    // 整整八九行。库里这种形状当时只有一条，所以只有那一个会话出问题。
+
     @ViewBuilder
     private func groupView(_ group: [Markdown.Block]) -> some View {
         switch group[0].kind {
@@ -691,6 +701,7 @@ struct MarkdownBody: View {
             Text(MarkdownCache.mergedText(id: messageId, first: group[0].id,
                                           blocks: group, terms: terms))
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         default:
             blockView(group[0])
@@ -704,12 +715,14 @@ struct MarkdownBody: View {
             // 走不到这里（段落都被 groupView 接走了），留着让 switch 完整
             Text(attr(block, text, style: 0, base: .body))
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .heading(let level, let text):
             // 同段落，走不到这里，留着让 switch 完整
             Text(attr(block, text, style: level, base: Markdown.headingFont(level)))
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .listItem(let marker, let text, let depth):
@@ -720,6 +733,7 @@ struct MarkdownBody: View {
                     .monospacedDigit()
                 Text(attr(block, text, style: 0, base: .body))
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.leading, CGFloat(depth) * 16)
@@ -730,6 +744,7 @@ struct MarkdownBody: View {
                 Text(attr(block, text, style: 0, base: .body))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
