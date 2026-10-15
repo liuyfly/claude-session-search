@@ -40,22 +40,46 @@ LEGACY_NAMES=("Claude 会话搜索")
 
 MIN_MACOS="14.0"
 
+# 产物路径**一律问 SwiftPM**，不写死。
+#
+# 这里踩过一次很贵的坑：原来写死 `.build/<triple>/release/`，工具链换版之后
+# 产物挪到了 `.build/out/Products/Release/`，而那两个旧目录里还躺着一个月前的
+# 二进制。构建每次都「成功」，lipo 每次都拿到文件，装进 /Applications 的却是
+# 一个月前的旧版本 —— 改了代码装上去跑的还是旧的，不报任何错。
+binpath() {
+  if [ -n "${1:-}" ]; then
+    swift build -c release --triple "$1-apple-macosx$MIN_MACOS" --show-bin-path
+  else
+    swift build -c release --show-bin-path
+  fi
+}
+
 echo "▸ 编译"
+mkdir -p "$DIST"
 if $FAST; then
   swift build -c release
-  BIN=".build/release/$BINARY_NAME"
+  BIN="$(binpath)/$BINARY_NAME"
 else
   # SwiftPM 的 --arch 双架构模式要走 xcbuild（需完整 Xcode），
   # 而 --triple 只依赖 Command Line Tools。分别构建再 lipo 合成。
+  SLICES=()
   for arch in arm64 x86_64; do
     echo "  · $arch"
     swift build -c release --triple "$arch-apple-macosx$MIN_MACOS" >/dev/null
+    # 两个 triple 的 bin-path 可能指向同一处，先各自拷一份再 lipo
+    cp "$(binpath "$arch")/$BINARY_NAME" "$DIST/$BINARY_NAME-$arch"
+    SLICES+=("$DIST/$BINARY_NAME-$arch")
   done
   BIN="$DIST/$BINARY_NAME-universal"
-  mkdir -p "$DIST"
-  lipo -create -output "$BIN" \
-    ".build/arm64-apple-macosx/release/$BINARY_NAME" \
-    ".build/x86_64-apple-macosx/release/$BINARY_NAME"
+  lipo -create -output "$BIN" "${SLICES[@]}"
+fi
+
+# 兜底：产物必须比最新的源文件新。上面那个坑之所以能瞒一个月，
+# 就是因为没人检查这一条 —— 装了个旧二进制，界面上什么都看不出来。
+NEWEST_SRC="$(ls -t Sources/*.swift Package.swift | head -1)"
+if [ "$NEWEST_SRC" -nt "$BIN" ]; then
+  echo "✗ 构建产物比 $NEWEST_SRC 还旧，多半是产物路径不对，拒绝打包" >&2
+  exit 1
 fi
 
 echo "▸ 组装 $APP"
