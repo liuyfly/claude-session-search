@@ -546,9 +546,12 @@ struct MessageBubble: View {
                                  terms: terms,
                                  onCopy: onCopy)
                 } else {
+                    // fixedSize 的理由同 MarkdownBody：不带的话长文本在
+                    // LazyVStack 里会被垂直压扁，末尾滚不出来
                     Text(TextCache.attributed(id: message.id, text: clip.shown, terms: terms,
                                               clipped: clip.hidden > 0, mono: collapsible))
                         .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if clip.hidden > 0 {
