@@ -93,21 +93,20 @@ struct DetailView: View {
                     }
 
                     // 底部锚点。兼作滚动目标：滚到它才能真正露出上面那个按钮。
-                    //
-                    // 它**自己**有状态栏那么高，这是在给状态栏让位。状态栏是
-                    // `safeAreaInset` 加在 NavigationSplitView 上的，不内缩这个
-                    // ScrollView，所以视口底边在状态栏**后面**。
-                    //
-                    // 留白不能加在 LazyVStack 的 `.padding(.bottom)` 上（原来就是
-                    // 那么写的）：滚到底是把**锚点底边**对齐视口底边，锚点下方的
-                    // padding 会被推出视口，一点忙都帮不上 —— 末尾那条于是正好
-                    // 躲在状态栏后面，而且已经滚到头，再滚也不动。
                     Color.clear
-                        .frame(height: StatusBarMetrics.shared.height)
+                        .frame(height: 1)
                         .id(Self.bottomAnchor)
                 }
                 .padding(16)
             }
+            // 给底部状态栏让位。
+            //
+            // 这件事**必须由视口来做**，不能靠在内容末尾塞一个占位视图：滚到底
+            // 是把锚点底边对齐**视口**底边，视口底边要是还在状态栏后面，内容末尾
+            // 就一定被压住。占位视图只在 scrollTo 恰好落在它身上时才像是有用，
+            // 落点一偏就白搭 —— 而流式输出时落点天天偏。
+            // 两个列表栏用的也是这一条，口径一致。
+            .safeAreaInset(edge: .bottom, spacing: 0) { StatusBarSpacer() }
             .onChange(of: model.jumpRequest) { _, new in
                 jump(delta: new - lastJumpRequest, proxy: proxy)
                 lastJumpRequest = new
