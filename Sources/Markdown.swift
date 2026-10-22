@@ -723,6 +723,9 @@ struct TableBlock: View {
                                   base: bold ? .callout.weight(.semibold) : .callout))
             .multilineTextAlignment(textAlign(col))
             .textSelection(.enabled)
+            // 理由同正文 Text：会折行的单元格不带 fixedSize 就会被压扁，
+            // 整张表跟着报矮
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// 参差的行按空单元格补齐，不越界
