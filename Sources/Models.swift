@@ -70,6 +70,11 @@ struct AgentMeta: Decodable, Sendable {
     var agentType: String?
     var description: String?
     var spawnDepth: Int?
+    /// 子 agent 跑完时 CLI 把它置 true。
+    ///
+    /// **不能把「没有这个字段」当成在跑** —— 它是后来才加的，本机 358 个
+    /// meta.json 里有 236 个老记录压根没写过它，全判成在跑就是满屏绿点。
+    var finished: Bool?
 }
 
 /// 单个 jsonl 文件的一次（增量）解析结果
@@ -117,6 +122,10 @@ struct SessionHitGroup: Identifiable, Sendable {
     var hitCount: Int
     var isSidechain: Bool
     var agentType: String?
+    /// 这个子 agent 的 jsonl 最后一次被写入的时刻（Unix 秒）
+    var fileMtime: Double = 0
+    /// .meta.json 里的 finished。nil 表示那份记录没有这个字段，**不等于在跑**
+    var agentFinished: Bool?
     var previews: [Hit]
     /// 命中里有多少条来自这个会话派发的子 agent。
     /// 子 agent 不作为独立会话列出，它们的命中归并到父会话上。
@@ -127,6 +136,23 @@ struct SessionHitGroup: Identifiable, Sendable {
     @MainActor
     var displayTitle: String {
         title == SessionMeta.untitledSentinel ? L.untitledSession : title
+    }
+
+    /// 认定「还在跑」的最大静默时长。子 agent 干活时每几秒就往 jsonl 追加一次，
+    /// 三分钟不写基本就是停了 —— 而 finished 字段又不是每份记录都有。
+    static let activeWindow: TimeInterval = 180
+
+    /// 这个子 agent 此刻是否还在跑。
+    ///
+    /// 两条判据**都**要过：
+    /// - `finished == true` 直接出局，这是最准的信号；
+    /// - 文件静默超过 `activeWindow` 也出局。
+    ///
+    /// 只看 finished 不行（老记录没这字段，会全亮），只看 mtime 也不行
+    /// （刚跑完那几分钟文件照样是新的）。
+    func isRunning(now: TimeInterval) -> Bool {
+        guard isSidechain, agentFinished != true, fileMtime > 0 else { return false }
+        return now - fileMtime < Self.activeWindow
     }
 }
 

@@ -894,7 +894,14 @@ enum SelfTest {
         print("    仅对话正文=\(convHits)  含工具输出=\(noisyHits)")
         expect(convHits <= noisyHits, "默认口径是含噪音口径的子集（\(convHits) ≤ \(noisyHits)）")
         expect(convHits > 0, "排除工具噪音后仍有对话命中")
-        expect(noisyHits > convHits, "工具输出确实贡献了大量额外命中（噪音过滤有意义）")
+        // 两边都撞到 hitLimit 时这一条没有意义：被截断的两个数必然相等，
+        // 断言会永远失败，掩盖掉真正的回归。语料涨到「error」光在对话正文里
+        // 就超过 2000 条之后，本机就是这个情形。
+        if convHits < Store.hitLimit, noisyHits < Store.hitLimit {
+            expect(noisyHits > convHits, "工具输出确实贡献了大量额外命中（噪音过滤有意义）")
+        } else {
+            print("    （两侧均达上限 \(Store.hitLimit)，该项不作断言）")
+        }
 
         var humanOnly = SearchFilter(); humanOnly.humanOnly = true
         let humanHits = (try? store.search(query: Q.common, filter: humanOnly))?.totalHits ?? -1

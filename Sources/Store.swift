@@ -72,6 +72,11 @@ final class Statement {
     func int(_ col: Int32) -> Int { Int(sqlite3_column_int64(handle, col)) }
     func int64(_ col: Int32) -> Int64 { sqlite3_column_int64(handle, col) }
     func bool(_ col: Int32) -> Bool { sqlite3_column_int(handle, col) != 0 }
+    func double(_ col: Int32) -> Double { sqlite3_column_double(handle, col) }
+    /// NULL 和 0 要分得开 —— 「没记录过」和「记录过是假」是两件事
+    func boolOrNil(_ col: Int32) -> Bool? {
+        sqlite3_column_type(handle, col) == SQLITE_NULL ? nil : bool(col)
+    }
 }
 
 // MARK: -
@@ -156,6 +161,7 @@ final class Store {
           agent_id          TEXT,
           agent_type        TEXT,
           agent_description TEXT,
+          agent_finished    INTEGER,
           indexed_bytes     INTEGER NOT NULL DEFAULT 0,
           file_mtime        REAL NOT NULL DEFAULT 0
         );
@@ -200,6 +206,22 @@ final class Store {
           INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.id, old.text);
         END;
         """)
+
+        // 老库里 sessions 表是 CREATE TABLE IF NOT EXISTS 建的，加了新列也不会补上
+        try addColumn("sessions", "agent_finished", "INTEGER")
+    }
+
+    /// 给已存在的表补一列，已经有了就什么都不做。
+    ///
+    /// 走这条路而不是递增 `schemaVersion`：版本号一变就是全量重建，本机
+    /// 2.6 GB 的会话记录要重读好几分钟。只有**解析口径**变了才值得那样做，
+    /// 加一列从 .meta.json 顺手读到的布尔值不值得。老行留 NULL，
+    /// 下次那个文件有新内容时自然补上。
+    private func addColumn(_ table: String, _ column: String, _ decl: String) throws {
+        let stmt = try prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")
+        stmt.bind(1, table).bind(2, column)
+        if stmt.step() { return }
+        try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(decl)")
     }
 
     // MARK: - 写入
@@ -291,8 +313,8 @@ final class Store {
         INSERT INTO sessions(id, project_id, file_path, title, title_source, first_prompt,
                              started_at, ended_at, msg_count, git_branch, is_sidechain,
                              parent_session_id, agent_id, agent_type, agent_description,
-                             indexed_bytes, file_mtime)
-        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                             indexed_bytes, file_mtime, agent_finished)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
         ON CONFLICT(id) DO UPDATE SET
           -- 增量索引时只读了文件尾部，标题行（在文件开头）往往不在这一批里，
           -- 于是本轮解析只能退到弱来源。绝不能让弱来源覆盖已存的权威标题，
@@ -309,7 +331,10 @@ final class Store {
           msg_count     = excluded.msg_count,
           git_branch    = COALESCE(excluded.git_branch, sessions.git_branch),
           indexed_bytes = excluded.indexed_bytes,
-          file_mtime    = excluded.file_mtime
+          file_mtime    = excluded.file_mtime,
+          -- 子 agent 跑完才会出现 finished，所以这一列只许从「不知道」变成
+          -- 有值，不许被一次读不到 meta.json 的增量索引抹回 NULL
+          agent_finished = COALESCE(excluded.agent_finished, sessions.agent_finished)
         """)
         stmt.bind(1, id).bind(2, projectId).bind(3, filePath)
             .bind(4, title.text).bind(5, title.source).bind(6, meta.firstPrompt)
@@ -319,6 +344,7 @@ final class Store {
             .bind(14, agentMeta?.agentType).bind(15, agentMeta?.description)
             .bind(16, Int64(indexedBytes))
         sqlite3_bind_double(stmt.handle, 17, mtime)
+        stmt.bind(18, agentMeta?.finished.map { $0 ? Int64(1) : Int64(0) })
         try stmt.run()
     }
 
@@ -487,7 +513,7 @@ final class Store {
     func subagents(of sessionId: String) throws -> [SessionHitGroup] {
         let stmt = try prepare("""
         SELECT s.id, s.title, p.display_name, p.cwd, s.started_at, s.ended_at,
-               s.msg_count, s.agent_type, p.id
+               s.msg_count, s.agent_type, p.id, s.file_mtime, s.agent_finished
         FROM sessions s JOIN projects p ON p.id = s.project_id
         WHERE s.parent_session_id = ?1
         ORDER BY s.started_at
@@ -500,7 +526,10 @@ final class Store {
                                        projectName: stmt.text(2) ?? "", projectCwd: stmt.text(3) ?? "",
                                        startedAt: stmt.text(4), endedAt: stmt.text(5),
                                        hitCount: stmt.int(6), isSidechain: true,
-                                       agentType: stmt.text(7), previews: []))
+                                       agentType: stmt.text(7),
+                                       fileMtime: stmt.double(9),
+                                       agentFinished: stmt.boolOrNil(10),
+                                       previews: []))
         }
         return out
     }

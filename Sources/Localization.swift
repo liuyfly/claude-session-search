@@ -207,6 +207,29 @@ enum L {
     @MainActor static func subagentsIn(_ n: Int) -> String {
         t("\(n) 个子 agent", n == 1 ? "1 subagent" : "\(n) subagents")
     }
+    /// 头部那行折叠标题。在跑的单独点出来 —— 只写总数的话，
+    /// 此刻活着的和一个月前跑完的长得一模一样。
+    @MainActor static func subagentsIn(_ n: Int, running: Int) -> String {
+        guard running > 0 else { return subagentsIn(n) }
+        return t("\(subagentsIn(n)) · \(running) 个在跑",
+                 "\(subagentsIn(n)) · \(running) running")
+    }
+    @MainActor static var agentRunning: String { t("在跑", "running") }
+    @MainActor static var agentRunningHelp: String {
+        t("这个子 agent 还在写记录", "This subagent is still writing records")
+    }
+    @MainActor static var subagentDispatched: String { t("派出子 agent", "Dispatched a subagent") }
+    @MainActor static var openSubagent: String {
+        t("单独打开这个子 agent", "Open this subagent on its own")
+    }
+    @MainActor static var expandSubagent: String {
+        t("就地展开它的对话", "Expand its conversation here")
+    }
+    @MainActor static var collapseSubagent: String { t("收起", "Collapse") }
+    @MainActor static var subagentNoText: String {
+        t("这个子 agent 只有工具记录，没有对话正文",
+          "This subagent has only tool records, no conversation text")
+    }
     @MainActor static func subagentHitsHelp(_ n: Int) -> String {
         t("其中 \(n) 条命中在子 agent 的记录里",
           "\(n) of these hits are in subagent records")

@@ -12,6 +12,7 @@ struct DetailView: View {
             // 头部若跟着滚就永远看不到会话 id 了。
             if let session = model.selectedSession, !model.loadingDetail {
                 SessionHeader(session: session, subagents: model.detailSubagents,
+                              running: model.runningSubagentIds,
                               onSelectSubagent: { model.selectedSessionId = $0 })
                 Divider()
             }
@@ -73,6 +74,10 @@ struct DetailView: View {
 
                     let hits = Set(model.hitIdsInDetail)
                     ForEach(model.visibleDetail) { msg in
+                        // 派发点在这条消息之前，卡片就排在它前面
+                        ForEach(model.subagentAnchors[msg.id] ?? []) { sub in
+                            SubagentCard(model: model, sub: sub)
+                        }
                         MessageBubble(
                             message: msg,
                             terms: model.detailTerms,
@@ -82,6 +87,11 @@ struct DetailView: View {
                             onCopy: { model.copyText($0) }
                         )
                         .id(msg.id)
+                    }
+
+                    // 派发之后父会话还没再说话的（多半正跑着），排在最后
+                    ForEach(model.trailingSubagents) { sub in
+                        SubagentCard(model: model, sub: sub)
                     }
 
                     // 展开与收回放在同一处，否则用户找不到回去的路
@@ -386,7 +396,10 @@ struct FindBar: View {
 struct SessionHeader: View {
     let session: SessionHitGroup
     let subagents: [SessionHitGroup]
+    let running: Set<String>
     let onSelectSubagent: (String) -> Void
+
+    @State private var listShown = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -415,45 +428,77 @@ struct SessionHeader: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            if !subagents.isEmpty {
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(subagents) { sub in
-                            Button {
-                                onSelectSubagent(sub.sessionId)
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "arrow.triangle.branch")
-                                        .font(.caption2)
-                                        .foregroundStyle(.purple)
-                                    Text(sub.displayTitle).lineLimit(1)
-                                    if let type = sub.agentType {
-                                        Text(type)
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    Spacer()
-                                    Text(L.plainCount(sub.hitCount))
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                        .monospacedDigit()
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.top, 3)
-                } label: {
-                    Text(L.subagentsIn(subagents.count))
-                        .font(.caption.weight(.medium))
-                }
-                .padding(.top, 2)
-            }
+            if !subagents.isEmpty { subagentSummary }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+    }
+
+    /// 子 agent 概览。只有一行，列表走浮层。
+    ///
+    /// 原来这里是 `DisclosureGroup`，就地展开成一列。两个问题：
+    /// - **会把头部撑坏**。展开后头部要高出两三百点，实测整条头部连同左侧项目栏
+    ///   一起从画面上消失，只剩正文顶着工具栏 —— 收起来才恢复。
+    /// - **撑不住数量**。本机有个会话挂了 112 个子 agent，就地列出来根本没法看。
+    ///
+    /// 浮层是自己的窗口，不参与头部的布局，多少条都只是浮层自己滚。
+    private var subagentSummary: some View {
+        Button {
+            listShown.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.caption2)
+                    .foregroundStyle(.purple)
+                Text(L.subagentsIn(subagents.count, running: running.count))
+                    .font(.caption.weight(.medium))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+        .popover(isPresented: $listShown, arrowEdge: .bottom) { subagentList }
+    }
+
+    private var subagentList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(subagents) { sub in
+                    Button {
+                        listShown = false
+                        onSelectSubagent(sub.sessionId)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.caption2)
+                                .foregroundStyle(.purple)
+                            Text(sub.displayTitle).lineLimit(1)
+                            if let type = sub.agentType, !type.isEmpty {
+                                Text(type)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if running.contains(sub.sessionId) { RunningDot() }
+                            Spacer(minLength: 12)
+                            Text(L.plainCount(sub.hitCount))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .monospacedDigit()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+        }
+        // 浮层得自己有个上限，否则 112 条会把它撑到比屏幕还高
+        .frame(width: 440, height: min(CGFloat(subagents.count) * 22 + 24, 420))
     }
 }
 
