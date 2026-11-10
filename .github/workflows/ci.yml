@@ -7,7 +7,13 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 was retired on 2026-11-02; a job that asks for it is cancelled
+    # before it starts ("the configuration 'macos-14-arm64-us-default' is not
+    # supported"), which reads as someone cancelling the run rather than as a
+    # broken workflow. Pinned rather than macos-latest so a new image lands
+    # here as a deliberate change, not as an overnight surprise -- the cost of
+    # that being exactly this: the pin has to be moved when an image retires.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
