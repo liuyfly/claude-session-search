@@ -118,9 +118,12 @@ final class AppModel {
             // 关掉时不用重查 —— 内存里过滤一下就行。
             if showToolsInTranscript, !detailHasTools {
                 // 保住当前内容和滚动位置：切开关不是换会话，不该把人弹回顶部
+                // （它跑完会顺带按新口径重取展开着的子 agent 正文）
                 loadDetail(keepingContent: true)
             } else {
                 refreshVisibleDetail()
+                // 展开着的子 agent 正文也要跟着换口径
+                reloadExpandedSubagents()
             }
         }
     }
@@ -139,6 +142,23 @@ final class AppModel {
 
     /// 被隐藏的工具记录条数
     private(set) var hiddenToolCount = 0
+
+    // MARK: - 正文里的子 agent
+
+    /// 子 agent 卡片挂在哪条正文**之前**。并发派发的几个会落在同一个锚点上。
+    private(set) var subagentAnchors: [Int64: [SessionHitGroup]] = [:]
+    /// 派发点在最后一条正文之后的（父会话还没接着说话，常见于「正在跑」）
+    private(set) var trailingSubagents: [SessionHitGroup] = []
+    /// 此刻还在跑的子 agent
+    private(set) var runningSubagentIds: Set<String> = []
+    /// 在正文里就地展开的子 agent
+    private(set) var expandedSubagents: Set<String> = []
+    /// 已展开的子 agent 的正文，按需加载
+    private(set) var subagentTranscripts: [String: [DetailMessage]] = [:]
+
+    /// 让绿点在子 agent 停下后自己熄灭的计时器。
+    /// 没有在跑的就不转 —— 它唯一的用处就是熄灯。
+    private var activityTick: Task<Void, Never>?
 
     // MARK: - 索引状态
 
@@ -551,12 +571,17 @@ final class AppModel {
         guard let sid = selectedSessionId, let search else {
             detail = []; detailSubagents = []
             detailHasTools = false; skippedToolCount = 0
+            expandedSubagents = []; subagentTranscripts = [:]
             refreshVisibleDetail()
+            refreshSubagentActivity()
             return
         }
         if !keepingContent {
             loadingDetail = true
             expanded = []
+            // 换会话了，上一个会话展开过哪些子 agent 跟这个无关
+            expandedSubagents = []
+            subagentTranscripts = [:]
         }
         // 只按需要的口径查。工具记录占了正文体积的九成，默认不显示时
         // 连搬进内存都不必 —— 只要知道有多少条，好在正文末尾给个入口。
@@ -591,6 +616,9 @@ final class AppModel {
                 self.detailSubagents = subs
                 self.resolvedSession = resolved
                 self.refreshVisibleDetail()
+                self.refreshSubagentActivity()
+                // 展开着的子 agent 自己也在长，跟着这一轮一起刷新
+                self.reloadExpandedSubagents()
                 self.loadingDetail = false
                 self.detailVersion += 1
                 // 递增在 detail 落定之后 —— 正文视图靠它触发滚动，
@@ -649,7 +677,90 @@ final class AppModel {
         hiddenToolCount = showToolsInTranscript
             ? 0
             : (detailHasTools ? detail.count - visibleDetail.count : skippedToolCount)
+        refreshSubagentLayout()
         refreshHits()
+    }
+
+    // MARK: - 子 agent 在正文里的位置与状态
+
+    /// 把每个子 agent 挂到正文里派发它的那个位置上。
+    ///
+    /// 不靠 tool_use 的 id 配对。那要给 messages 表加一列、递增 schemaVersion，
+    /// 等于让 2.6 GB 的记录全量重读一遍 —— 为了排版上的一个锚点不值得。
+    ///
+    /// 用时间就够准：子 agent 的第一条记录必然**晚于**派发它的那条 assistant
+    /// 消息、**早于**父会话的下一条消息。所以「第一条时间戳 ≥ 子 agent 起始
+    /// 时间的正文」，它前面就是派发点。同一轮并发派发的几个会落在同一个锚点上，
+    /// 本来就该如此。
+    ///
+    /// 两边都按时间有序，所以走一趟归并，不要对每个子 agent 扫一遍正文 ——
+    /// 112 个子 agent × 7302 条正文那种会话上，后者是实打实的卡顿。
+    private func refreshSubagentLayout() {
+        var anchors: [Int64: [SessionHitGroup]] = [:]
+        var trailing: [SessionHitGroup] = []
+        let subs = detailSubagents.sorted { ($0.startedAt ?? "") < ($1.startedAt ?? "") }
+        var idx = 0
+        for sub in subs {
+            guard let start = sub.startedAt, !start.isEmpty else {
+                trailing.append(sub)
+                continue
+            }
+            while idx < visibleDetail.count, (visibleDetail[idx].timestamp ?? "") < start {
+                idx += 1
+            }
+            if idx < visibleDetail.count {
+                anchors[visibleDetail[idx].id, default: []].append(sub)
+            } else {
+                trailing.append(sub)
+            }
+        }
+        subagentAnchors = anchors
+        trailingSubagents = trailing
+    }
+
+    /// 重算「谁还在跑」，并在还有人在跑时安排下一次重算。
+    private func refreshSubagentActivity() {
+        let now = Date().timeIntervalSince1970
+        let running = Set(detailSubagents.filter { $0.isRunning(now: now) }.map(\.sessionId))
+        if running != runningSubagentIds { runningSubagentIds = running }
+        activityTick?.cancel()
+        guard !running.isEmpty else { return }
+        activityTick = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.refreshSubagentActivity() }
+        }
+    }
+
+    // MARK: - 子 agent 正文的就地展开
+
+    func toggleSubagent(_ id: String) {
+        if expandedSubagents.contains(id) {
+            expandedSubagents.remove(id)
+        } else {
+            expandedSubagents.insert(id)
+            loadSubagentTranscript(id)
+        }
+    }
+
+    private func reloadExpandedSubagents() {
+        for id in expandedSubagents { loadSubagentTranscript(id) }
+    }
+
+    private func loadSubagentTranscript(_ id: String) {
+        guard let search else { return }
+        let wantTools = showToolsInTranscript
+        Task { [weak self] in
+            let msgs = (try? await search.messages(sessionId: id,
+                                                   conversationOnly: !wantTools)) ?? []
+            await MainActor.run {
+                guard let self, self.expandedSubagents.contains(id) else { return }
+                // 空结果不许覆盖已经读到的内容。理由同正文：查询出错被 try? 吞成
+                // []、或读到写入中途的状态时，正看着的那段会当场变成空白。
+                if msgs.isEmpty, self.subagentTranscripts[id]?.isEmpty == false { return }
+                self.subagentTranscripts[id] = msgs
+            }
+        }
     }
 
     private func refreshHits() {
