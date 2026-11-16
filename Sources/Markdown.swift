@@ -454,16 +454,54 @@ enum Markdown {
     /// `liuyfly@126.com` → `mailto:liuyfly@126.com`、`example.com` → `https://example.com/`。
     /// 那不是新信息，补出去就是每个邮箱后面跟一串重复的东西。
     nonisolated static func linkAddsInfo(url: String, text: String) -> Bool {
-        func bare(_ s: String) -> String {
-            var t = s
-            for scheme in ["mailto:", "https://", "http://"] where t.hasPrefix(scheme) {
-                t.removeFirst(scheme.count)
-                break
-            }
-            if t.hasSuffix("/") { t.removeLast() }       // 规范化补的尾斜杠
-            return t
+        // 补 URL 的意义是「让读者看到他看不到的地址」。所以两种情况不补：
+        //
+        // 1. 两边规范化后是同一个地址（裸邮箱、尾斜杠、全角括号之类）
+        // 2. **显示出来的文字本身就是一个地址** —— 读者已经在看地址了
+        //
+        // 第 2 条是被真实语料逼出来的，而且第 1 条救不了它。中文正文里
+        // 「网址（说明）」极常见，自动成链会把后面的 `**（说明` 一起吃进 URL，
+        // 于是 `absoluteString` 可能把它折成半角，**也可能整个 punycode 掉**
+        // （host 里混进非 ASCII 就会），变成
+        // `https://www.example.xn--com**()-8p9kx715a.` 这种人读不了的东西。
+        // 照着补出去就是在句尾挂一串乱码。规范化比对拦不住 punycode，
+        // 而「文字本身已经是地址」这条拦得住。
+        //
+        // 代价说明白：`[https://a.example](https://b.example/long)` 这种
+        // 「文字是甲地址、链接指向乙地址」会被一起吞掉。它很少见，
+        // 而且作者既然把甲写成可见文字，显示甲本身不算错。
+        if bareURL(url) == bareURL(text) { return false }
+        return !looksLikeAddress(text)
+    }
+
+    /// 这段文字本身是不是一个地址。只认显式协议头 —— 不猜 `a.b` 这种裸域名，
+    /// 猜错会把正常链接的 URL 吞掉，那比多补一次糟。
+    private nonisolated static func looksLikeAddress(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespaces).lowercased()
+        return ["https://", "http://", "mailto:"].contains { t.hasPrefix($0) }
+    }
+
+    /// 比对链接文字和 URL 时的规范化。
+    ///
+    /// 除了剥协议头和规范化补的尾斜杠，还要把**全角标点折成半角**。
+    /// 这条是真实语料逼出来的：中文正文里「网址（说明）」极常见，而
+    /// `AttributedString` 的自动成链会把后面的 `**（内网` 一起吃进 URL，
+    /// 于是 text 和 url 只差一个全角/半角括号 —— 不折的话两边「不相等」，
+    /// 就会给复制出来的文字尾巴上挂一段
+    /// `(https://www.example.com**(内网)` 这样的垃圾。
+    private nonisolated static func bareURL(_ s: String) -> String {
+        var t = s
+        for scheme in ["mailto:", "https://", "http://"] where t.hasPrefix(scheme) {
+            t.removeFirst(scheme.count)
+            break
         }
-        return bare(url) != bare(text)
+        if t.hasSuffix("/") { t.removeLast() }       // 规范化补的尾斜杠
+        // 全角 ！ 到 ～（U+FF01–U+FF5E）和半角一一对应，差 0xFEE0
+        return String(t.unicodeScalars.map { sc -> Character in
+            (0xFF01...0xFF5E).contains(sc.value)
+                ? Character(UnicodeScalar(sc.value - 0xFEE0)!)
+                : Character(sc)
+        })
     }
 
     /// 表格重排成空格对齐的纯文本。
