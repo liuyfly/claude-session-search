@@ -78,6 +78,63 @@ enum SelfTest {
 
     /// 纯函数档：不读磁盘、不建索引、不依赖任何会话记录。
     /// 任何机器上都该全绿 —— 这里红了就是真的有 bug。
+    /// `a` 是不是 `b` 的子序列（按顺序出现即可，中间允许插别的）。
+    ///
+    /// 用它而不是相等，是因为复制成纯文本**允许多**（链接后面补的 ` (url)`），
+    /// 但**不允许少**。线性一趟，两边都是几千字的量级。
+    nonisolated static func isSubsequence(_ a: String, of b: String) -> Bool {
+        var it = b.makeIterator()
+        for ch in a {
+            var found = false
+            while let c = it.next() {
+                if c == ch { found = true; break }
+            }
+            if !found { return false }
+        }
+        return true
+    }
+
+    /// 认引号的 CSV 读取器。只给自检用 —— app 本身只写 CSV、不读。
+    ///
+    /// 写得朴素但规矩对：引号里的逗号和换行都是**字段内容**，连着两个引号
+    /// 是一个转义出来的引号。按 `split(",")` 省事，代价是遇到带逗号的标题
+    /// 就把列数算错，然后去怪导出。
+    nonisolated static func parseCSV(_ src: String) -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var inQuotes = false
+        var it = src.makeIterator()
+        var pending: Character?
+
+        func endField() { row.append(field); field = "" }
+        func endRow() { endField(); rows.append(row); row = [] }
+
+        while let c = pending ?? it.next() {
+            pending = nil
+            if inQuotes {
+                if c == "\"" {
+                    if let n = it.next() {
+                        if n == "\"" { field.append("\"") }   // "" → 一个引号
+                        else { inQuotes = false; pending = n }
+                    } else { inQuotes = false }
+                } else { field.append(c) }
+            } else {
+                switch c {
+                case "\"":  inQuotes = true
+                case ",":   endField()
+                // `\r\n` 在 Swift 里是**一个** Character（扩展字形簇），
+                // 不是两个 —— 只写 `case "\n"` 的话 CRLF 文件会整份落进字段里。
+                case "\n", "\r\n", "\r": endRow()
+                default:    field.append(c)
+                }
+            }
+        }
+        // 末尾没有换行时最后一行也要收下；有换行时不能收一行空的
+        if !field.isEmpty || !row.isEmpty { endRow() }
+        return rows
+    }
+
     private static func pureChecks() {
         // ---------- 7. 侧栏选中范围 ----------
         //
@@ -718,6 +775,36 @@ enum SelfTest {
                "mailto: 前缀不算新信息")
         expect(!Markdown.linkAddsInfo(url: "https://example.com/", text: "https://example.com"),
                "规范化补的尾斜杠不算新信息")
+        // 真实语料里抓到的：中文正文「网址（说明）」，自动成链把后面的
+        // `**（内网` 一起吃进了 URL。规范化的结果有两种，都得挡住。
+        //
+        // ① 折成半角 —— 靠 bareURL 的全角折叠。注意这条**特意不带协议头**，
+        //    否则它会被「文字本身是地址」那条顺手挡掉，全角折叠就没人测了。
+        expect(!Markdown.linkAddsInfo(url: "https://example.com/a(b",
+                                      text: "example.com/a（b"),
+               "全角/半角括号之差不算新信息")
+        // ② 整个 punycode 掉 —— host 里混进非 ASCII 就会。规范化比对拦不住，
+        //    靠的是「显示出来的文字本身已经是地址」
+        expect(!Markdown.linkAddsInfo(
+                    url: "https://www.example.xn--com**()-8p9kx715a.",
+                    text: "https://www.example.com**（内网"),
+               "URL 被 punycode 成乱码时不补出去")
+        // 文字本身是地址才算，别猜裸域名 —— 猜错会吞掉真信息
+        expect(Markdown.linkAddsInfo(url: "https://docs.example.com/guide",
+                                     text: "docs.example.com"),
+               "没有协议头的文字不算地址，照补")
+        // 反向不能吞：文字只是个短标签时，URL 是真信息
+        expect(Markdown.linkAddsInfo(url: "https://docs.example.com/guide", text: "docs"),
+               "URL 比文字多出内容时照补")
+        // 判据只认相等，不用「文字包含 URL」—— 放宽的话这条会被误吞：
+        // "t.co" 正好是 "report.co" 的子串
+        expect(Markdown.linkAddsInfo(url: "https://t.co", text: "report.co"),
+               "短 URL 碰巧是文字的子串时照补")
+        // 端到端：这一句过去会在句尾多出一截重复的 URL
+        let ptBareURL = Markdown.plainText(
+            "UI 在 **https://www.example.com**（内网）。")
+        expect(!ptBareURL.contains("(https://"),
+               "裸网址后面跟中文括号时不补重复 URL（得到 \(ptBareURL)）")
 
         // 代码块只脱围栏。里面的 * _ # 是代码本身，剥它就是破坏它
         let ptCode = Markdown.plainText("```swift\nlet x = a * b   // **not bold**\n```")
@@ -792,6 +879,33 @@ enum SelfTest {
                "不输出 shell alias")
         expect(AppModel.resumeCommandLine(cwd: "/a", fileKey: "b").hasSuffix(" b"),
                "会话 id 在命令末尾（--resume 的参数位）")
+
+        // 子序列判定：复制成纯文本允许多（补 URL），不允许少
+        expect(isSubsequence("abc", of: "abc"), "相等算子序列")
+        expect(isSubsequence("abc", of: "axbxc"), "中间插东西仍算")
+        expect(isSubsequence("", of: "abc"), "空串是任何串的子序列")
+        expect(!isSubsequence("abc", of: "ab"), "少一个字就不算")
+        expect(!isSubsequence("abc", of: "acb"), "顺序不对不算")
+
+        // ---------- 7w. 自检自己的 CSV 读取器 ----------
+        //
+        // 放在纯函数档而不是语料档：它不需要任何会话记录，而 CI 只跑 --pure。
+        print("\n[7w] CSV 读取器")
+        // 它要是把列数算错，语料档里那些「第 9 列是 is_subagent」的断言
+        // 就会红得莫名其妙，而导出本身没问题 —— 真实语料里就这么发生过一次。
+        expect(parseCSV("a,b\nc,d") == [["a", "b"], ["c", "d"]], "朴素两行")
+        expect(parseCSV("a,b\nc,d\n") == [["a", "b"], ["c", "d"]], "末尾换行不多出空行")
+        expect(parseCSV("\"a,b\",c") == [["a,b", "c"]], "引号里的逗号是内容")
+        expect(parseCSV("\"line1\nline2\",c") == [["line1\nline2", "c"]],
+               "引号里的换行是内容，不拆行")
+        expect(parseCSV("\"say \"\"hi\"\"\",c") == [["say \"hi\"", "c"]], "两个引号还原成一个")
+        expect(parseCSV("a,,b") == [["a", "", "b"]], "空字段保位")
+        expect(parseCSV("a,b\r\nc,d") == [["a", "b"], ["c", "d"]], "CRLF 也认")
+        // 和写端对拍：任意字段写出去再读回来必须原样
+        for sample in ["plain", "a,b", "say \"hi\"", "line1\nline2", "", "全角，逗号"] {
+            let back = parseCSV(Export.csvField(sample) + ",tail")
+            expect(back == [[sample, "tail"]], "字段往返不变：\(sample.debugDescription)")
+        }
     }
 
     /// 语料档：需要 `~/.claude/projects` 下有真实会话，会建一个完整索引。
@@ -1150,11 +1264,13 @@ enum SelfTest {
             String(s.filter { !syntaxChars.contains($0) })
         }
         MainActor.assumeIsolated {
-            for group in recents.prefix(12) {
+            // 取样面。原来是 12 个会话 / 1500 条，小到语料一涨就换一批样本，
+            // 于是同一份代码今天绿明天红。放大一档，代价是多跑十几秒。
+            for group in recents.prefix(40) {
                 let msgs = (try? store.messages(sessionId: group.sessionId,
                                                 conversationOnly: true)) ?? []
                 for m in msgs where m.role == "assistant" && m.kind == "text" {
-                    guard mdChecked < 1500 else { break }
+                    guard mdChecked < 6000 else { break }
                     mdChecked += 1
                     if m.text.contains("|\n") || m.text.contains("|\r\n") { mdTableSyntax += 1 }
                     let bs = Markdown.blocks(m.text)
@@ -1198,11 +1314,22 @@ enum SelfTest {
                     }
                     if contentOnly(m.text) != contentOnly(shown.joined()) { mdLost += 1 }
 
-                    // 复制按钮送出去的东西。比对要一字不差，所以让它把代码块的
-                    // 语言标注也留着 —— 实际复制时那个标注是丢掉的。
-                    let pt = Markdown.plainText(m.text)
-                    if contentOnly(m.text)
-                        != contentOnly(Markdown.plainText(m.text, keepCodeLanguage: true)) {
+                    // 复制按钮送出去的东西。
+                    //
+                    // 比对的**对象是渲染结果 `shown`，不是原始 markdown**。
+                    // 原来拿原文比，口径就和 `stripInline` 的设计打架：
+                    // - `[docs.x.io](https://docs.x.io)` —— URL 和显示文字一样，
+                    //   刻意不补一遍，于是复制出来比原文「短」
+                    // - `![alt](path)` —— 图片只留 alt，路径不是显示内容
+                    // 这两样都是故意的，却会让断言红。而它过去能绿，纯粹是
+                    // 语料里碰巧没有 —— 一旦有了就时红时绿，掩盖真回归。
+                    //
+                    // 现在钉的是这条真正该成立的：**屏幕上显示出来的字，
+                    // 复制出来必须一个不少**（子序列）。多出来的允许 ——
+                    // 链接后面补的 ` (url)` 就是有意多出来的那部分，
+                    // 它补得对不对由 `[7k]` 里 `linkAddsInfo` 的断言单独守。
+                    let pt = Markdown.plainText(m.text, keepCodeLanguage: true)
+                    if !isSubsequence(contentOnly(shown.joined()), of: contentOnly(pt)) {
                         ptLost += 1
                     }
                     // 切出来的表格重排后必须是「表头 + 横线 + 每行一条」。
@@ -1228,9 +1355,9 @@ enum SelfTest {
         // 而手写的单元样本照样过。所以不钉数量（你的语料里可能真没表格），
         // 只钉「样本里出现过表格语法，就必须切得出来」。
         // 复制成纯文本：标记没了，内容一个字不少
-        print("   复制成纯文本：内容有出入 \(ptLost) 条，重排了 \(ptTables) 张表"
+        print("   复制成纯文本：丢字 \(ptLost) 条，重排了 \(ptTables) 张表"
               + "，正文里仍有表格管道的 \(ptWithPipe) 条（切不出来的表格，原样留着）")
-        expect(ptLost == 0, "纯文本复制一个字都没丢（有出入 \(ptLost) 条）")
+        expect(ptLost == 0, "复制出来的内容没丢掉任何显示出来的字（丢了 \(ptLost) 条）")
         expect(ptBadTable == 0,
                "\(ptTables) 张真实表格重排后行数都对（错的 \(ptBadTable) 张）")
 
@@ -1420,6 +1547,7 @@ enum SelfTest {
         expect(Export.csvField("say \"hi\"") == "\"say \"\"hi\"\"\"", "内部引号翻倍")
         expect(Export.csvField("line1\nline2") == "\"line1\nline2\"", "含换行要加引号")
 
+
         // 文件名净化。`/` 会被当成路径分隔，前导 `.` 会变隐藏文件。
         expect(!Export.sanitize("a/b:c").contains("/"), "去掉路径分隔符")
         expect(!Export.sanitize("a/b:c").contains(":"), "去掉冒号")
@@ -1491,13 +1619,29 @@ enum SelfTest {
                                       conversationMessages: 0,
                                       fileName: Export.fileName(for: $0))
             }
-            let parsed = Export.csv(rows: rows)
-                .split(separator: "\n").dropFirst()
-                .map { $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) }
+            // 按 CSV 规矩解析，不能按逗号硬切。
+            //
+            // 真实语料里逮到过：某个子 agent 的标题是
+            // `Re-review !469, review !479` —— 导出时 `csvField` 正确地给它加了
+            // 引号，但这里要是 `split(",")`，这一行就多出一列，`is_subagent`
+            // 从下标 9 挪到 10，断言红得莫名其妙，而导出本身是对的。
+            // 标题里有换行时，按 "\n" 切行同样会把一行拆成两行。
+            let csvOut = Export.csv(rows: rows)
+            let table = parseCSV(csvOut)
+            let parsed = Array(table.dropFirst())
             let agentFiles = Set(parsed.compactMap { $0.count > 1 ? $0[1] : nil })
             expect(agentFiles.count == subs.count,
                    "CSV 的 agent_file 列能唯一标识每个子 agent（\(agentFiles.count)/\(subs.count)）")
             expect(parsed.allSatisfy { $0.count > 9 && $0[9] == "yes" }, "子 agent 行标了 is_subagent")
+            expect(table.first == Export.csvColumns, "解析回来的表头和列定义一致")
+            expect(parsed.allSatisfy { $0.count == Export.csvColumns.count },
+                   "每行的列数都等于表头列数（含逗号/引号/换行的字段也是）")
+            // 往返：引号转义真的管用吗。之前没有任何断言验过这件事 ——
+            // 按逗号硬切的解析器连「字段里有逗号」都还原不出来，更谈不上验证。
+            let titles = Set(parsed.compactMap { $0.count > 2 ? $0[2] : nil })
+            let wanted = Set(rows.map { Export.title(of: $0.session) })
+            expect(titles == wanted,
+                   "标题经 CSV 往返一字不差（含带逗号的那条）")
         }
 
         // ---------- 8a. 合成主键 → 磁盘文件名 ----------
