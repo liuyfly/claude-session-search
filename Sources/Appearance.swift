@@ -191,3 +191,36 @@ final class DayTicker {
         ) { _ in MainActor.assumeIsolated { _ = DayTicker.shared.refresh() } }
     }
 }
+
+/// 「用量要不要自己定时刷新」。
+///
+/// 默认开：不开的话工具栏那个表盘在第一次打开浮层之前永远停在默认档
+/// —— 它是按当周百分比选图标的，没数据就只是个装饰。开着才有「扫一眼
+/// 就知道紧不紧张」这件事。
+///
+/// 留开关是因为它跟别的设置不同，**会周期性起子进程**（`claude -p "/usage"`）。
+/// 查它不耗额度，但毕竟是 app 替你跑了个命令，该给个出口。
+/// 关掉之后打开浮层照样会取，只是不再有后台节拍。
+@Observable
+@MainActor
+final class UsageAutoRefreshSetting {
+    static let shared = UsageAutoRefreshSetting()
+    private static let key = "autoRefreshUsage"
+
+    var enabled: Bool {
+        didSet {
+            guard enabled != oldValue else { return }
+            UserDefaults.standard.set(enabled, forKey: Self.key)
+        }
+    }
+
+    /// 同 `FollowSetting.resolve`：`UserDefaults.bool(forKey:)` 分不出
+    /// 「没存过」和「明确关掉」，默认值会悄悄翻成关。
+    nonisolated static func resolve(stored: Any?) -> Bool {
+        (stored as? Bool) ?? true
+    }
+
+    private init() {
+        enabled = Self.resolve(stored: UserDefaults.standard.object(forKey: Self.key))
+    }
+}

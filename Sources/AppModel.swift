@@ -252,28 +252,134 @@ final class AppModel {
     var usageLoading = false
     var usageError: String?
 
-    /// 数据超过这个岁数就重新取。额度是分钟级变化的，没必要更勤 ——
-    /// 每次取都要起一个 login shell 跑 claude，约 1 秒。
-    private static let usageMaxAge: TimeInterval = 120
+    /// 打开浮层时，数据超过这个岁数就顺手重取。额度是分钟级变化的，
+    /// 没必要更勤 —— 每次取都要起一个 claude 进程，约 1 秒。
+    nonisolated static let usageMaxAge: TimeInterval = 120
 
-    var usageIsStale: Bool {
-        guard let usage else { return true }
-        return Date().timeIntervalSince(usage.fetchedAt) > Self.usageMaxAge
+    /// 后台自动刷新的间隔。
+    ///
+    /// 比 `usageMaxAge` 长，因为这两件事的代价不一样：开浮层是人主动要看，
+    /// 等一秒理所当然；自动刷新是没人要求的后台动作，起进程的成本该摊薄些。
+    nonisolated static let usageAutoInterval: TimeInterval = 300
+
+    /// 数据已经多久没更新了。没取过算无穷旧。
+    var usageAge: TimeInterval {
+        guard let usage else { return .infinity }
+        return Date().timeIntervalSince(usage.fetchedAt)
     }
 
-    /// - Parameter force: 忽略缓存岁数，用户点刷新时传 true
-    func loadUsage(force: Bool = false) {
-        guard !usageLoading, force || usageIsStale else { return }
+    /// - Parameters:
+    ///   - force: 忽略缓存岁数，用户点刷新时传 true
+    ///   - maxAge: 多旧才值得重取。默认按开浮层那档；自动刷新传自己的间隔
+    func loadUsage(force: Bool = false, maxAge: TimeInterval? = nil) {
+        guard !usageLoading, force || usageAge > (maxAge ?? Self.usageMaxAge) else { return }
         usageLoading = true
         usageError = nil
         Task {
             do {
                 usage = try await UsageProbe.fetch()
+                usageFailures = 0
             } catch {
                 usageError = error.localizedDescription
+                usageFailures += 1
             }
             usageLoading = false
         }
+    }
+
+    // MARK: 自动刷新
+
+    /// 节拍器。nil 表示没在跑。
+    private var usageTick: Task<Void, Never>?
+    /// 连续失败次数，用来退避
+    private var usageFailures = 0
+    /// 睡醒 / 切回前台这两个观察者挂没挂过
+    private var usageObserversInstalled = false
+
+    /// 节拍周期。**它不等于刷新间隔** —— 见 `startUsageAutoRefresh` 的说明。
+    private static let usageTickPeriod: UInt64 = 60_000_000_000
+
+    /// 连续失败后把间隔翻倍，封顶 16 倍（5 分钟 → 80 分钟）。
+    ///
+    /// 不退避的话，没登录 / 找不到 claude 时每 5 分钟就白烧一轮 ——
+    /// 而一轮失败不便宜：`UsageProbe.fetch` 缺百分比会重试 3 次，
+    /// 每次超时 60 秒。纯函数，自检直接断言。
+    nonisolated static func usageBackoff(failures: Int) -> TimeInterval {
+        usageAutoInterval * pow(2, Double(min(max(failures, 0), 4)))
+    }
+
+    /// 开始定时刷新用量。启动时调一次。
+    ///
+    /// **节拍 60 秒，但判据是数据岁数，不是节拍次数。** 这是刻意的：
+    /// `Task.sleep` 在系统睡眠期间不走、醒来也不补偿，拿它直接当 5 分钟
+    /// 节拍器的话，合盖过夜再打开，看到的是昨晚的数字，还得再等满 5 分钟。
+    /// 而那一刻恰恰是人会去瞄一眼表盘的时候。
+    ///
+    /// 所以节拍只负责「问一句」，要不要真取由 `usageAge` 决定。于是：
+    /// - 睡醒、切回前台可以直接再问一次，**多叫几次是无害的**（同 `DayTicker`）
+    /// - 手动点过刷新之后，自动这条不会紧接着再取 —— 岁数已经被重置了
+    func startUsageAutoRefresh() {
+        usageTick?.cancel()
+        usageTick = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.usageTickPeriod)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.autoRefreshUsage() }
+            }
+        }
+        // 睡醒和切回前台各补一次。单靠节拍会漏掉这两个时刻，
+        // 而它们正是显示必须是对的那两个时刻。
+        //
+        // 只挂一次：WindowGroup 默认带「新建窗口」，开第二个窗口会让
+        // onAppear 再跑一遍。重复挂不会出错（判据幂等），但同一个通知
+        // 会白叫好几次。
+        guard !usageObserversInstalled else { return }
+        usageObserversInstalled = true
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoRefreshUsage() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoRefreshUsage() }
+        }
+        // 窗口从「被盖住 / 最小化」重新露出来 —— 判据换成可见性之后，
+        // 这才是和 didBecomeActive 对应的那个时刻
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoRefreshUsage() }
+        }
+    }
+
+    /// 这个窗口算不算「有人能看见」。
+    ///
+    /// 判据刻意**不是** `NSApp.isActive`（本 app 在不在最前面）。那条规则挡的
+    /// 本意是「没人看」，用的却是「没在用」—— 单屏上这两件事基本等价，
+    /// 多屏上不等价：窗口摆在副屏，人在主屏干活，一抬眼就能瞄到那个表盘，
+    /// 全程不需要激活它。按 isActive 判的话它可能已经几小时没更新，
+    /// 而界面上没有任何迹象说明这一点。
+    ///
+    /// `occlusionState` 是 AppKit 专门为这件事给的：窗口哪怕只露出一角也算
+    /// `.visible`，被整个盖住、最小化、隐藏都不算。于是「开着不管」仍然不会
+    /// 白跑（总会被别的窗口盖上，或者合盖），副屏常驻却能正常刷新。
+    ///
+    /// 纯函数，自检直接断言。
+    nonisolated static func isWatchable(isVisible: Bool, occlusionVisible: Bool) -> Bool {
+        isVisible && occlusionVisible
+    }
+
+    private func autoRefreshUsage() {
+        guard UsageAutoRefreshSetting.shared.enabled else { return }
+        // 一个窗口都看不见就别取。开着不管放一周就是两千个 claude 进程，
+        // 而那一周没人看那个表盘。
+        guard NSApp.windows.contains(where: {
+            Self.isWatchable(isVisible: $0.isVisible,
+                             occlusionVisible: $0.occlusionState.contains(.visible))
+        }) else { return }
+        loadUsage(maxAge: Self.usageBackoff(failures: usageFailures))
     }
 
     // MARK: - 会话内查找（⌘F）
