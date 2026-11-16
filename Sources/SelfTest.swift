@@ -168,6 +168,47 @@ enum SelfTest {
         expect(!UsageProbe.looksLikeUsage("Invalid API key · Please run /login"),
                "未登录不算用量正文")
 
+        // ---------- 7r3. 用量自动刷新 ----------
+        print("\n[7r3] 用量自动刷新")
+
+        // 退避：没登录时一轮失败要烧掉 3 次尝试 × 60s 超时，
+        // 不退避就是每 5 分钟白烧一轮
+        expect(AppModel.usageBackoff(failures: 0) == AppModel.usageAutoInterval,
+               "没失败过 → 就是基础间隔")
+        expect(AppModel.usageBackoff(failures: 1) == AppModel.usageAutoInterval * 2,
+               "失败一次 → 间隔翻倍")
+        expect(AppModel.usageBackoff(failures: 4) == AppModel.usageAutoInterval * 16,
+               "失败四次 → 16 倍")
+        // 封顶，否则失败一整天之后间隔会涨到荒谬的数量级
+        expect(AppModel.usageBackoff(failures: 99) == AppModel.usageBackoff(failures: 4),
+               "退避封顶在 16 倍，不会无限涨")
+        // 负数是不该出现的输入，但真传进来也不能算出比基础间隔还短的值
+        expect(AppModel.usageBackoff(failures: -1) == AppModel.usageAutoInterval,
+               "负数回落到基础间隔，不会比它更勤")
+
+        // 自动刷新必须比开浮层那档更懒。反过来的话，后台节拍会比人
+        // 主动要看还勤 —— 起进程的成本就摊不薄了
+        expect(AppModel.usageAutoInterval > AppModel.usageMaxAge,
+               "自动刷新间隔比开浮层的缓存岁数长")
+
+        // 「有人能看见」的判据。两条都要满足 —— 最小化的窗口 isVisible 是 false，
+        // 被整个盖住的窗口 isVisible 还是 true 但 occlusion 不是 .visible，
+        // 少判哪一条都会让 app 在没人看的时候继续起 claude 进程
+        expect(AppModel.isWatchable(isVisible: true, occlusionVisible: true),
+               "窗口露着 → 取")
+        expect(!AppModel.isWatchable(isVisible: false, occlusionVisible: true),
+               "最小化 / 隐藏 → 不取")
+        expect(!AppModel.isWatchable(isVisible: true, occlusionVisible: false),
+               "被整个盖住 → 不取")
+        expect(!AppModel.isWatchable(isVisible: false, occlusionVisible: false),
+               "两条都不满足 → 不取")
+
+        // 开关的默认值，同 7f 那个坑
+        expect(UsageAutoRefreshSetting.resolve(stored: nil), "从没设置过 → 默认开")
+        expect(!UsageAutoRefreshSetting.resolve(stored: false),
+               "存了 false → 关（和「没存过」区分得开）")
+        expect(UsageAutoRefreshSetting.resolve(stored: "yes"), "脏数据回落到默认开")
+
         // ---------- 7f. 有新输出时滚到底部 ----------
         //
         // 这个开关唯一的坑在**默认值**：`UserDefaults.bool(forKey:)` 对不存在的键

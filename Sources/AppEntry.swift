@@ -15,6 +15,8 @@ struct AppEntry: App {
                     AppearanceSetting.shared.apply()
                     // 跨天时让「今天 / 昨天」这类相对时间自动重画
                     DayTicker.shared.start()
+                    // 工具栏那个表盘要有意义，就得有人定时去取用量
+                    model.startUsageAutoRefresh()
                 }
         }
         .commands {

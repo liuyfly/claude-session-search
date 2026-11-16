@@ -36,6 +36,7 @@ struct UsageButton: View {
 struct UsagePanel: View {
     @Bindable var model: AppModel
     @State private var showRaw = false
+    @Bindable private var auto = UsageAutoRefreshSetting.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -119,6 +120,21 @@ struct UsagePanel: View {
             } else if !model.usageLoading {
                 Text(L.usageIdle).font(.callout).foregroundStyle(.secondary)
             }
+
+            // 开关放在最后、而且无论有没有数据都显示 —— 取不到用量的时候
+            // 恰恰最需要能把这个后台动作关掉
+            Divider()
+            Toggle(isOn: $auto.enabled) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L.usageAutoRefresh).font(.caption)
+                    Text(L.usageAutoRefreshHint(Int(AppModel.usageAutoInterval) / 60))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
         }
         .padding(14)
     }

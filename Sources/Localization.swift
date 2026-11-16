@@ -387,14 +387,23 @@ enum L {
           "The percentages come from the server and occasionally don’t arrive. The breakdown below is computed locally and still valid — hit refresh to retry.")
     }
     @MainActor static var usageHint: String {
-        t("这份数据本地没有，要靠 claude -p \"/usage\" 向服务端查。请确认 claude 命令在登录 shell 的 PATH 里，且已登录。",
-          "This data isn’t stored locally — it comes from `claude -p \"/usage\"`. Make sure `claude` is on your login shell’s PATH and you’re signed in.")
+        t("这份数据本地没有，要靠 claude -p \"/usage\" 向服务端查。请确认 claude 装在常见位置（~/.local/bin、~/.claude/local、Homebrew、nvm 等），且已登录。",
+          "This data isn’t stored locally — it comes from `claude -p \"/usage\"`. Make sure `claude` is installed in one of the usual places (~/.local/bin, ~/.claude/local, Homebrew, nvm, …) and that you’re signed in.")
     }
     @MainActor static func usageFetchedAt(_ when: String) -> String {
         t("获取于 \(when)", "Fetched \(when)")
     }
     @MainActor static var usageHelp: String {
         t("订阅额度用量（查询不消耗额度）", "Subscription usage (checking costs no quota)")
+    }
+    @MainActor static var usageAutoRefresh: String {
+        t("自动刷新", "Auto-refresh")
+    }
+    /// 把条件写进提示里：不说的话，用户会以为最小化之后也在刷，
+    /// 然后奇怪为什么窗口一露出来数字就是刚取的
+    @MainActor static func usageAutoRefreshHint(_ minutes: Int) -> String {
+        t("窗口可见时每 \(minutes) 分钟取一次",
+          "Every \(minutes) min while the window is visible")
     }
 
     // MARK: 导出
