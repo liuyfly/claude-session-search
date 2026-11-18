@@ -94,6 +94,33 @@ enum SelfTest {
         return true
     }
 
+    /// 逐条核对「每一条都按顺序原样出现在文档里」。
+    ///
+    /// 不写成 `texts.filter { !doc.contains($0) }`：那是 O(条数 × 文档长度)，
+    /// 每一条都从文档开头重新扫一遍。语料涨到一万多条正文、上千万字之后，
+    /// **这一条断言能独自跑二十分钟以上** —— 而且卡住的样子和「自检有点慢」
+    /// 一模一样，不抓调用栈根本看不出它卡在哪。
+    ///
+    /// 导出物里各条本来就是按原顺序排的，所以带一个只进不退的游标，从上一条的
+    /// 结尾往后找。断言通过时总代价退回到扫一遍文档。
+    ///
+    /// 顺带把断言变强了两处：原来的写法对顺序一无所知，对重复文本也只要求
+    /// 「至少出现过一次」；这里要求第 n 条出现在第 n-1 条之后，于是
+    /// 「导出顺序和消息顺序一致」和「重复的文本各自都在」也一并钉住了。
+    ///
+    /// - Returns: 第一条找不到的（序号从 1 起，开头 40 字）；全都在就是 nil
+    nonisolated static func firstMissingInOrder(_ texts: [String],
+                                                in doc: String) -> (index: Int, text: String)? {
+        var cursor = doc.startIndex
+        for (i, t) in texts.enumerated() where !t.isEmpty {
+            guard let r = doc.range(of: t, range: cursor..<doc.endIndex) else {
+                return (i + 1, String(t.prefix(40)))
+            }
+            cursor = r.upperBound
+        }
+        return nil
+    }
+
     /// 认引号的 CSV 读取器。只给自检用 —— app 本身只写 CSV、不读。
     ///
     /// 写得朴素但规矩对：引号里的逗号和换行都是**字段内容**，连着两个引号
@@ -265,6 +292,30 @@ enum SelfTest {
         expect(!UsageAutoRefreshSetting.resolve(stored: false),
                "存了 false → 关（和「没存过」区分得开）")
         expect(UsageAutoRefreshSetting.resolve(stored: "yes"), "脏数据回落到默认开")
+
+        // ---------- 7q. 「每条都原样出现」怎么查 ----------
+        //
+        // 这条断言原来写成 `texts.filter { !doc.contains($0) }`，语料涨到
+        // 一万多条正文之后独自跑了二十分钟还没完 —— 平方级的代价，表现出来
+        // 却只是「自检好像有点慢」。换成只进不退的游标，顺带把顺序也钉住了。
+        print("\n[7q] 按顺序逐条核对")
+        let doc = "开头 AAA 中间 BBB 结尾 CCC"
+        expect(SelfTest.firstMissingInOrder(["AAA", "BBB", "CCC"], in: doc) == nil,
+               "按顺序出现 → 全找得到")
+        expect(SelfTest.firstMissingInOrder(["AAA", "ZZZ"], in: doc)?.index == 2,
+               "缺的那条被指出来（序号从 1 起）")
+        // 乱序会被判成缺失：游标已经越过去了。这是刻意的 ——
+        // 导出物就该和消息同序，顺序错了本身就是 bug。
+        expect(SelfTest.firstMissingInOrder(["CCC", "AAA"], in: doc)?.index == 2,
+               "乱序 → 判为缺失（导出顺序必须和原顺序一致）")
+        // 空串跳过，不然它会白白消耗一次匹配
+        expect(SelfTest.firstMissingInOrder(["AAA", "", "CCC"], in: doc) == nil,
+               "空串跳过")
+        // 重复文本要求各自都在，而不是「出现过就行」—— 比 contains 严
+        expect(SelfTest.firstMissingInOrder(["X", "X"], in: "X 一次") != nil,
+               "出现一次的文本要两条 → 缺（contains 会误判为通过）")
+        expect(SelfTest.firstMissingInOrder(["X", "X"], in: "X 两次 X") == nil,
+               "出现两次 → 两条都对得上")
 
         // ---------- 7p. 从子 agent 返回主会话 ----------
         //
@@ -1008,9 +1059,24 @@ enum SelfTest {
         let active = total - second.skipped
         print("    跳过 \(second.skipped)/\(total) 个文件，\(active) 个仍在写入，新增 \(second.newMessages) 条")
 
-        // 同时活跃的会话不会多：留 3 个的余量（本会话 + 可能并行的另一两个）
-        expect(active <= 3, "至多 3 个文件仍在写入（实际 \(active)）")
-        expect(second.newMessages < 100, "增量只带来少量新内容（实际 \(second.newMessages) 条）")
+        // 钉的是**比例**，不是活跃文件的个数。
+        //
+        // 原来写的是 `active <= 3`，注释还解释「本会话 + 可能并行的另一两个」——
+        // 那钉的是「此刻你开着几个 Claude 会话」，是环境事实，不是代码性质。
+        // 而且它和自检自己的时长耦合：这一档光索引就要四五分钟，期间任何一个
+        // 活跃会话都会写盘，跑得越久这个数越大。实测 5 个活跃文件就把它打红了，
+        // 可增量索引明明工作得好好的（848/853 跳过）。让自检时长决定自检成败，
+        // 是比不钉还糟的那种断言。
+        //
+        // 真正要钉的是「没变的文件会被跳过」。它失效时的样子是 skipped 塌到
+        // 很小甚至 0，比例判据一样抓得住，还不会被环境误伤。
+        let skipRatio = total > 0 ? Double(second.skipped) / Double(total) : 0
+        expect(skipRatio > 0.95,
+               "绝大多数文件被跳过（\(second.skipped)/\(total)，\(Int(skipRatio * 100))%）")
+        // 同理：新增条数也取决于自检跑了多久、期间谁在说话。
+        // 要钉的是「增量不会重新灌进一整轮语料」，所以也用比例。
+        expect(Double(second.newMessages) < Double(counts.messages) * 0.01,
+               "增量只带来少量新内容（\(second.newMessages) 条 / 已有 \(counts.messages) 条）")
 
         guard let counts2 = try? store.counts() else { print("❌ 统计失败"); return false }
         expect(counts2.messages == counts.messages + second.newMessages,
@@ -1567,8 +1633,12 @@ enum SelfTest {
                 let md = Recover.markdown(sample)
                 expect(md.contains(sample.sessionId), "残卷里带会话 id")
                 expect(md.contains("残卷"), "残卷明确标注了不完整")
-                let missing = sample.entries.filter { !md.contains($0.text) }
-                expect(missing.isEmpty, "每条提问都出现在残卷里（缺 \(missing.count) 条）")
+                // 同样走游标 —— 这里条数少，但口径该和导出那条一致，
+                // 而且提问本来就是按时间正序的（上面刚断言过）
+                let gap = firstMissingInOrder(sample.entries.map(\.text), in: md)
+                expect(gap == nil,
+                       "每条提问都按顺序出现在残卷里"
+                       + (gap.map { "（第 \($0.index) 条起找不到：\($0.text)）" } ?? ""))
             }
         }
 
@@ -1610,8 +1680,10 @@ enum SelfTest {
             let convo = msgs.filter { $0.kind == "text" }
             let bodyBytes = msgs.reduce(0) { $0 + $1.text.count }
             expect(md.count > bodyBytes, "导出物容得下全部正文（\(md.count) > \(bodyBytes)）")
-            let missing = msgs.filter { !$0.text.isEmpty && !md.contains($0.text) }
-            expect(missing.isEmpty, "每条正文都原样出现，一条不漏（缺 \(missing.count) 条）")
+            let gap = firstMissingInOrder(msgs.map(\.text), in: md)
+            expect(gap == nil,
+                   "每条正文都按顺序原样出现，一条不漏"
+                   + (gap.map { "（第 \($0.index) 条起找不到：\($0.text)）" } ?? ""))
             if let longest = convo.max(by: { $0.text.count < $1.text.count }) {
                 expect(md.contains(longest.text),
                        "最长的一条（\(longest.text.count) 字）没被截断")
