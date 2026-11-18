@@ -40,6 +40,10 @@ struct AppEntry: App {
                     .keyboardShortcut("g", modifiers: [.command, .shift])
                     .disabled(model.hitIdsInDetail.isEmpty)
                 Divider()
+                Button(L.backToParent) { model.returnToParent() }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .disabled(model.parentSessionId == nil)
+                Divider()
                 Button(L.scrollToTop) { model.scrollToTopRequest += 1 }
                     .keyboardShortcut(.upArrow, modifiers: .command)
                 Button(L.scrollToBottom) { model.scrollToBottomRequest += 1 }

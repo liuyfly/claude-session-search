@@ -266,6 +266,41 @@ enum SelfTest {
                "存了 false → 关（和「没存过」区分得开）")
         expect(UsageAutoRefreshSetting.resolve(stored: "yes"), "脏数据回落到默认开")
 
+        // ---------- 7p. 从子 agent 返回主会话 ----------
+        //
+        // 下钻到子 agent 之后左栏里没有任何对应项，返回的唯一依据就是主键结构：
+        // 子 agent 的主键是「父会话 uuid : agent 文件名」，主会话是裸 uuid。
+        // 这一段钉住的就是「谁有父会话」这个判断，它决定返回按钮出不出现。
+        print("\n[7p] 返回主会话")
+        expect(SessionHitGroup.parentId(of: "abc-123:agent-deadbeef") == "abc-123",
+               "子 agent → 父会话 id")
+        expect(SessionHitGroup.parentId(of: "abc-123") == nil,
+               "主会话没有父会话（按钮不该出现）")
+        // uuid 本身不含冒号，所以这个判据不会把主会话误判成子 agent
+        expect(!UUID().uuidString.contains(":"), "uuid 不含冒号（判据成立的前提）")
+        // agent 文件名里再出现冒号也只拆第一个 —— 父会话那半必须完整
+        expect(SessionHitGroup.parentId(of: "abc-123:agent:odd") == "abc-123",
+               "只按第一个冒号拆，父会话那半不被二次切断")
+        // 和 fileKey 的关系：对子 agent 两者相同，对主会话一个有值一个没有。
+        // 分成两个函数正是因为这点 —— 返回按钮要的是「有没有父会话」，
+        // fileKey 要的是「磁盘文件叫什么」，后者对主会话也永远有值。
+        expect(SessionHitGroup.fileKey(of: "abc-123") == "abc-123"
+                && SessionHitGroup.parentId(of: "abc-123") == nil,
+               "主会话：fileKey 有值而 parentId 为空（两者不可互相替代）")
+
+        // 返回之后要定位回派发点。目标**带着它所属的会话 id**，就是为了让
+        // 「残留」变成无害的 —— 没有这一层，返回的实现就得靠「异步加载一定
+        // 晚于同步赋值」这种一改就失效的顺序依赖。
+        let target = AppModel.RevealTarget(session: "main-1", subagent: "main-1:agent-a")
+        expect(AppModel.subagentToReveal(target: target, current: "main-1")
+                == "main-1:agent-a", "回到目标会话 → 定位到那个子 agent")
+        expect(AppModel.subagentToReveal(target: target, current: "main-2") == nil,
+               "换去了别的会话 → 目标残留也不触发")
+        expect(AppModel.subagentToReveal(target: target, current: nil) == nil,
+               "没有选中会话 → 不触发")
+        expect(AppModel.subagentToReveal(target: nil, current: "main-1") == nil,
+               "没有目标 → 不触发")
+
         // ---------- 7f. 有新输出时滚到底部 ----------
         //
         // 这个开关唯一的坑在**默认值**：`UserDefaults.bool(forKey:)` 对不存在的键
@@ -1658,6 +1693,28 @@ enum SelfTest {
             print("    \(sid.prefix(20))… → \(key.prefix(12))…")
             expect(path.contains(key), "拆出的 key 能在真实文件路径里找到")
             expect(!path.contains(sid), "合成主键本身不出现在路径里（所以必须拆）")
+        }
+
+        // 返回按钮指向的主会话必须真的在库里 —— 否则点回去是一片空白。
+        // 纯函数只能证明 id 拆得对，拆出来的东西存不存在只有语料能回答。
+        var mainIds = Set<String>()
+        if let stmt = try? store.prepare("SELECT id FROM sessions WHERE is_sidechain = 0") {
+            while stmt.step(), let id = stmt.text(0) { mainIds.insert(id) }
+        }
+        if let stmt = try? store.prepare("SELECT id FROM sessions WHERE is_sidechain = 1") {
+            var checked = 0, missing = 0, unsplittable = 0
+            while stmt.step(), let sid = stmt.text(0) {
+                guard let pid = SessionHitGroup.parentId(of: sid) else {
+                    unsplittable += 1
+                    continue
+                }
+                checked += 1
+                if !mainIds.contains(pid) { missing += 1 }
+            }
+            print("    \(checked) 个子 agent 的返回目标 → 缺 \(missing) 个")
+            expect(unsplittable == 0,
+                   "每个子 agent 的主键都能拆出父会话（拆不出 \(unsplittable) 个）")
+            expect(missing == 0, "返回按钮指向的主会话都在库里（缺 \(missing) 个）")
         }
 
         // ---------- 8b. 长正文截断 ----------

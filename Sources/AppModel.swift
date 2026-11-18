@@ -80,6 +80,29 @@ final class AppModel {
     var selectedSessionId: String? {
         didSet { if selectedSessionId != oldValue { loadDetail() } }
     }
+
+    /// 从子 agent 返回主会话时，要在主会话正文里重新定位到的那个子 agent。
+    ///
+    /// 为什么需要它：主会话动辄几千条，返回后默认停在最后一条，而派发点往往在
+    /// 中间 —— 没有这一跳，「返回」只是把人扔回一片陌生的正文里，还得自己翻。
+    ///
+    /// **带上目标会话 id**，而不是只存子 agent id：这样它残留到别的会话也不会
+    /// 误触发，于是 `returnToParent` 里改 id 和写目标的先后次序就无关紧要了 ——
+    /// 那种靠「异步加载一定晚于同步赋值」成立的顺序依赖，是改两行就会悄悄失效的。
+    struct RevealTarget: Equatable, Sendable {
+        var session: String
+        var subagent: String
+    }
+
+    var revealTarget: RevealTarget?
+
+    /// 正文视图这次该定位到哪个子 agent。目标不是当前会话就返回 nil。
+    nonisolated static func subagentToReveal(target: RevealTarget?,
+                                             current: String?) -> String? {
+        guard let target, target.session == current else { return nil }
+        return target.subagent
+    }
+
     /// 当前选中会话的元信息。可能来自搜索结果、最近列表，或子 agent 下钻。
     var selectedSession: SessionHitGroup? {
         guard let sid = selectedSessionId else { return nil }
@@ -91,6 +114,45 @@ final class AppModel {
 
     /// 点开子 agent 时它不在任何列表里，单独查一次补上头部信息
     fileprivate var resolvedSession: SessionHitGroup?
+
+    /// 同上，但查的是**父会话** —— 头部那个返回按钮要显示它的标题。
+    /// 左栏只列主会话，可父会话未必在当前筛选范围里，不能指望从列表取到。
+    fileprivate var resolvedParent: SessionHitGroup?
+
+    /// 当前选中的若是子 agent，它所属的主会话。自身是主会话时为 nil。
+    var parentSession: SessionHitGroup? {
+        guard let pid = parentSessionId else { return nil }
+        return listedSessions.first { $0.sessionId == pid }
+            ?? recent.first { $0.sessionId == pid }
+            ?? resolvedParent
+    }
+
+    /// 当前会话所属的主会话 id。自身是主会话时为 nil。
+    ///
+    /// 和 `parentSession` 分开：**能不能返回**只取决于有没有这个 id，
+    /// 和元信息查没查到无关。查不到标题时按钮照样要能点。
+    var parentSessionId: String? {
+        selectedSessionId.flatMap(SessionHitGroup.parentId(of:))
+    }
+
+    /// 回到派发当前子 agent 的那个主会话，并在正文里定位到派发点。
+    func returnToParent() {
+        guard let sid = selectedSessionId,
+              let pid = SessionHitGroup.parentId(of: sid) else { return }
+        revealTarget = RevealTarget(session: pid, subagent: sid)
+        selectedSessionId = pid
+    }
+
+    /// 派发某个子 agent 的那条正文消息。
+    ///
+    /// 返回 nil 有两种正当情形：它排在正文末尾之后（`trailingSubagents`），
+    /// 或者派发点那条消息在当前口径下被滤掉了。两种都让调用方回退到「滚到底」，
+    /// 那里恰好就是这些卡片所在的位置。
+    func anchorMessageId(forSubagent sid: String) -> Int64? {
+        subagentAnchors.first { _, subs in
+            subs.contains { $0.sessionId == sid }
+        }?.key
+    }
 
     /// 这个会话是否在当前项目筛选范围内。「全部项目」(nil) 容纳一切。
     private func inCurrentProject(_ group: SessionHitGroup) -> Bool {
@@ -676,6 +738,7 @@ final class AppModel {
         detailTask?.cancel()
         guard let sid = selectedSessionId, let search else {
             detail = []; detailSubagents = []
+            resolvedSession = nil; resolvedParent = nil
             detailHasTools = false; skippedToolCount = 0
             expandedSubagents = []; subagentTranscripts = [:]
             refreshVisibleDetail()
@@ -699,6 +762,13 @@ final class AppModel {
             let subs = (try? await search.subagents(of: sid)) ?? []
             // 点开子 agent 时它不在任何列表里，补查一次它自己的元信息
             let resolved = try? await search.session(id: sid)
+            // 父会话同理 —— 返回按钮要显示它的标题
+            let parent: SessionHitGroup?
+            if let pid = SessionHitGroup.parentId(of: sid) {
+                parent = try? await search.session(id: pid)
+            } else {
+                parent = nil
+            }
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, self.selectedSessionId == sid else { return }
@@ -721,6 +791,7 @@ final class AppModel {
                 self.skippedToolCount = skipped
                 self.detailSubagents = subs
                 self.resolvedSession = resolved
+                self.resolvedParent = parent
                 self.refreshVisibleDetail()
                 self.refreshSubagentActivity()
                 // 展开着的子 agent 自己也在长，跟着这一轮一起刷新

@@ -258,6 +258,12 @@ enum L {
     @MainActor static var prevHit: String { t("上一个命中", "Previous Match") }
     @MainActor static var nextHitHelp: String { t("下一个命中 (⌘G)", "Next match (⌘G)") }
     @MainActor static var prevHitHelp: String { t("上一个命中 (⇧⌘G)", "Previous match (⇧⌘G)") }
+    @MainActor static var parentSession: String { t("主会话", "Main session") }
+    @MainActor static var backToParent: String { t("返回主会话", "Back to Main Session") }
+    @MainActor static var backToParentHelp: String {
+        t("回到派发这个子 agent 的主会话 (⌘[)",
+          "Back to the session that dispatched this subagent (⌘[)")
+    }
     @MainActor static var scrollToTop: String { t("滚动到顶部", "Scroll to Top") }
     @MainActor static var scrollToBottom: String { t("滚动到底部", "Scroll to Bottom") }
     @MainActor static var followNewOutput: String { t("有新输出时滚到底部", "Scroll to Bottom on New Output") }

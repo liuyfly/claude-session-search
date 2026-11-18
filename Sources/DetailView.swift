@@ -13,7 +13,10 @@ struct DetailView: View {
             if let session = model.selectedSession, !model.loadingDetail {
                 SessionHeader(session: session, subagents: model.detailSubagents,
                               running: model.runningSubagentIds,
-                              onSelectSubagent: { model.selectedSessionId = $0 })
+                              parent: model.parentSession,
+                              canReturn: model.parentSessionId != nil,
+                              onSelectSubagent: { model.selectedSessionId = $0 },
+                              onReturn: { model.returnToParent() })
                 Divider()
             }
             // 查找条放在正文**上方**而不是浮在上面：它是常驻条不是一次性提示，
@@ -146,7 +149,21 @@ struct DetailView: View {
             .onAppear {
                 model.hitCursor = 0
                 DispatchQueue.main.async {
-                    if let firstHit = model.hitIdsInDetail.first {
+                    // 无条件消费掉，**不管**这次匹不匹配：正文一旦露过面，
+                    // 这个目标就不该再留着了，否则一次没走成的返回会一直挂在
+                    // 那里，等到下次打开那个会话时冷不丁跳一下。
+                    let reveal = AppModel.subagentToReveal(target: model.revealTarget,
+                                                           current: model.selectedSessionId)
+                    model.revealTarget = nil
+                    if let sub = reveal {
+                        // 刚从这个子 agent 返回：回到派发它的那条消息，而不是会话末尾
+                        if let anchor = model.anchorMessageId(forSubagent: sub) {
+                            proxy.scrollTo(anchor, anchor: .center)
+                        } else {
+                            // 派发点在正文末尾之后（卡片就排在那儿），滚到底即可
+                            scrollToBottom(proxy)
+                        }
+                    } else if let firstHit = model.hitIdsInDetail.first {
                         // 带查询时跳第一个命中 —— 搜完当然想先看到匹配处，
                         // 这条优先于「滚到底」
                         proxy.scrollTo(firstHit, anchor: .center)
@@ -396,12 +413,18 @@ struct SessionHeader: View {
     let session: SessionHitGroup
     let subagents: [SessionHitGroup]
     let running: Set<String>
+    /// 当前是子 agent 时，它所属的主会话。查不到就只有返回按钮没有标题。
+    var parent: SessionHitGroup? = nil
+    /// 能不能返回。**不**用 `parent != nil` 判断 —— 标题查不到时按钮照样要能点。
+    var canReturn: Bool = false
     let onSelectSubagent: (String) -> Void
+    var onReturn: () -> Void = {}
 
     @State private var listShown = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if canReturn { backLink }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if session.isSidechain {
                     Image(systemName: "arrow.triangle.branch")
@@ -433,6 +456,30 @@ struct SessionHeader: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+    }
+
+    /// 回到派发这个子 agent 的主会话。
+    ///
+    /// 做成一条面包屑摆在标题**上方**，而不是工具栏上的后退按钮：左栏只列主
+    /// 会话，下钻到子 agent 之后列表里没有任何对应项，视觉上整个失去了来路。
+    /// 面包屑把「这是谁派发的」和「怎么回去」合成同一个东西，就地回答了这件事。
+    ///
+    /// 语义是「回到父会话」而不是「后退一步」—— 父子关系写在主键里，无论你是
+    /// 从头部浮层、正文卡片还是搜索结果点进来的，它都指向同一个地方。
+    private var backLink: some View {
+        Button(action: onReturn) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 9, weight: .bold))
+                Text(parent?.displayTitle ?? L.parentSession)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(L.backToParentHelp)
     }
 
     /// 子 agent 概览。只有一行，列表走浮层。

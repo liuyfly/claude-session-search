@@ -111,6 +111,18 @@ struct SessionHitGroup: Identifiable, Sendable {
     }
 
     var fileKey: String { Self.fileKey(of: sessionId) }
+
+    /// 这个主键所属的**主会话** id；自身就是主会话时返回 nil。
+    ///
+    /// 判据是主键里有没有冒号，不是 `isSidechain` —— 要用它的场合（头部的返回
+    /// 按钮）在元信息补齐之前就得作出判断，而主键本身一定在手上。
+    /// 主会话的 id 是裸 uuid，不含冒号，所以这个判据不会误伤。
+    static func parentId(of sessionId: String) -> String? {
+        sessionId.contains(":") ? fileKey(of: sessionId) : nil
+    }
+
+    /// 自己所属的主会话 id。
+    var parentId: String? { Self.parentId(of: sessionId) }
     var title: String
     /// 所属项目。用来判断「切项目后当前选中的会话是否还在新范围里」——
     /// 没有它就只能一切项目就清空选中会话，那会被侧栏的顺序抖动误伤。
