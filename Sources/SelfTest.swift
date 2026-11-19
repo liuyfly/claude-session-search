@@ -94,6 +94,18 @@ enum SelfTest {
         return true
     }
 
+    /// 索引到的数量，对不对得上磁盘。
+    ///
+    /// 用区间而不是等式：`lo` 是索引**开始前**数到的磁盘数，`hi` 是结束后数到的。
+    /// 这一档光索引就要四五分钟，期间磁盘只会长（jsonl 是追加写的，文件不会
+    /// 凭空消失），所以遍历到的数量必然落在这两者之间。
+    ///
+    /// 漏索引的样子是 `got < lo`，照样抓得住 —— 放宽的只是「自检自己跑的这段
+    /// 时间里新出现的东西」，那本来就不该算在索引头上。
+    nonisolated static func indexedInRange(_ got: Int, _ lo: Int, _ hi: Int) -> Bool {
+        got >= lo && got <= hi
+    }
+
     /// 逐条核对「每一条都按顺序原样出现在文档里」。
     ///
     /// 不写成 `texts.filter { !doc.contains($0) }`：那是 O(条数 × 文档长度)，
@@ -316,6 +328,15 @@ enum SelfTest {
                "出现一次的文本要两条 → 缺（contains 会误判为通过）")
         expect(SelfTest.firstMissingInOrder(["X", "X"], in: "X 两次 X") == nil,
                "出现两次 → 两条都对得上")
+
+        // 索引对账的区间判据。放宽的只是自检自己跑的那几分钟里新出现的东西，
+        // 「漏索引」那一侧一点没松。
+        expect(SelfTest.indexedInRange(521, 521, 523), "正好等于开始时的磁盘数 → 过")
+        expect(SelfTest.indexedInRange(523, 521, 523), "期间新增的也都索引到了 → 过")
+        expect(SelfTest.indexedInRange(522, 521, 523), "落在区间里 → 过")
+        expect(!SelfTest.indexedInRange(520, 521, 523), "比开始时还少 → 漏了，必须红")
+        expect(!SelfTest.indexedInRange(524, 521, 523), "比结束时还多 → 多出了磁盘上没有的，必须红")
+        expect(SelfTest.indexedInRange(7, 7, 7), "磁盘没变时退化成等式")
 
         // ---------- 7p. 从子 agent 返回主会话 ----------
         //
@@ -1011,6 +1032,10 @@ enum SelfTest {
 
         // ---------- 1. 全量索引 ----------
         print("\n[1] 全量索引 \(Indexer.defaultRoot.path)")
+        // 索引**之前**先数一次磁盘。这一档光索引就要四五分钟，期间活跃会话会
+        // 新开子 agent（实测一轮里磁盘上多出 2 个），所以索引后再数到的数字
+        // 已经不是索引时看到的那个了。下面的对账要用区间，就得有这个下界。
+        let diskBefore = countOnDisk()
         guard let first = try? indexer.indexAll(onProgress: { p in
             if p.scanned % 50 == 0 || p.scanned == p.total {
                 print("    \(p.scanned)/\(p.total) …")
@@ -1037,13 +1062,27 @@ enum SelfTest {
         // 写死数量的护栏迟早会因为数据自然衰减而误报，那时人只会把它调低——
         // 护栏就废了。「索引到的 == 磁盘上有的」才是索引层真正要守的不变量。
         let disk = countOnDisk()
-        print("    磁盘: \(disk.sessions) 主会话 + \(disk.sidechains) 子 agent, \(disk.projects) 个项目目录")
-        expect(counts.sessions == disk.sessions,
-               "主会话全部入库（库 \(counts.sessions) / 磁盘 \(disk.sessions)）")
-        expect(counts.sidechains == disk.sidechains,
-               "子 agent 全部入库（库 \(counts.sidechains) / 磁盘 \(disk.sidechains)）")
-        expect(counts.projects == disk.projects,
-               "有会话的项目全部入库（库 \(counts.projects) / 磁盘 \(disk.projects)）")
+        print("    磁盘: \(disk.sessions) 主会话 + \(disk.sidechains) 子 agent, \(disk.projects) 个项目目录"
+              + (disk.sidechains != diskBefore.sidechains
+                 ? "（索引期间新增 \(disk.sidechains - diskBefore.sidechains) 个子 agent）" : ""))
+
+        // 对账用**区间**，不是等式。
+        //
+        // 「索引到的 == 磁盘上有的」是索引层真正要守的不变量，但这两个数不是
+        // 同一时刻取的：中间隔着四五分钟的索引。期间磁盘只会长（Claude Code
+        // 追加写，不会凭空少一个文件），所以索引遍历到的数量必然落在
+        // 「开始时的磁盘数」和「结束时的磁盘数」之间。
+        //
+        // 写成等式的代价是实打实的：一轮自检里有人新开了 2 个子 agent，
+        // 断言就红成「子 agent 全部入库（库 521 / 磁盘 523）」—— 看上去像索引
+        // 漏了两个，其实索引一个没漏。漏了的样子是库 < 开始时的磁盘数，
+        // 区间判据照样抓得住。
+        expect(indexedInRange(counts.sessions, diskBefore.sessions, disk.sessions),
+               "主会话全部入库（库 \(counts.sessions) / 磁盘 \(diskBefore.sessions)→\(disk.sessions)）")
+        expect(indexedInRange(counts.sidechains, diskBefore.sidechains, disk.sidechains),
+               "子 agent 全部入库（库 \(counts.sidechains) / 磁盘 \(diskBefore.sidechains)→\(disk.sidechains)）")
+        expect(indexedInRange(counts.projects, diskBefore.projects, disk.projects),
+               "有会话的项目全部入库（库 \(counts.projects) / 磁盘 \(diskBefore.projects)→\(disk.projects)）")
         // 正文块数只做「不为空」的下限，具体数量同样随数据变
         expect(counts.messages > counts.sessions,
                "正文块数多于会话数（\(counts.messages) 条）")
@@ -1081,8 +1120,15 @@ enum SelfTest {
         guard let counts2 = try? store.counts() else { print("❌ 统计失败"); return false }
         expect(counts2.messages == counts.messages + second.newMessages,
                "正文总数 = 首轮 + 增量（\(counts.messages)+\(second.newMessages) vs \(counts2.messages)）")
-        expect(counts2.sessions == counts.sessions && counts2.sidechains == counts.sidechains,
-               "重跑不产生重复会话")
+        // 同一个病的第三处。标签写的是「不产生重复」，判据却是「计数一字不差」——
+        // 于是自检期间新开的 2 个子 agent 把它打红成「重跑不产生重复会话」，
+        // 让人去查根本不存在的重复插入。会话 id 是主键，重复插入本来就进不来；
+        // 这里真正该守的是「只会多、不会少」，以及多出来的都有文件可依。
+        let grew = (counts2.sessions - counts.sessions) + (counts2.sidechains - counts.sidechains)
+        expect(counts2.sessions >= counts.sessions && counts2.sidechains >= counts.sidechains,
+               "重跑不丢会话（\(counts.sessions)+\(counts.sidechains) → \(counts2.sessions)+\(counts2.sidechains)）")
+        expect(grew <= active,
+               "新增的会话都来自这一轮没被跳过的文件（新增 \(grew) / 活跃 \(active)）")
 
         // 回归防护：增量索引只读文件尾部，标题行（在文件开头）不在这一批里。
         // 曾经因此把会话名覆盖成某条中间消息的正文。
